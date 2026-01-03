@@ -1,6 +1,16 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 
+// Claude dark palette
+const colors = {
+  background: "#2b2a27",
+  composer: "#1f1e1b",
+  text: "#eee",
+  muted: "#9a9893",
+  primary: "#ae5630",
+  userBubble: "#393937",
+};
+
 type Session = {
   id: string;
   title: string;
@@ -56,72 +66,87 @@ export default function HomePage() {
     <div
       style={{
         minHeight: "100vh",
-        background: "#0a0a0a",
-        color: "#e0e0e0",
+        background: colors.background,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         padding: "48px 24px",
       }}
     >
+      {/* Header */}
       <h1
         style={{
           fontSize: "48px",
-          marginBottom: "48px",
+          fontFamily: "Georgia, serif",
           fontWeight: 300,
+          color: colors.text,
+          marginBottom: "8px",
         }}
       >
         MOOSE
       </h1>
-
-      {/* Resume Section */}
-      <div
+      <p
         style={{
-          width: "100%",
-          maxWidth: "500px",
-          marginBottom: "32px",
+          color: colors.muted,
+          marginBottom: "48px",
+          fontFamily: "Georgia, serif",
         }}
       >
-        <h2
-          style={{
-            fontSize: "14px",
-            color: "#888",
-            marginBottom: "12px",
-            textTransform: "uppercase",
-            letterSpacing: "1px",
-          }}
-        >
-          Resume Session
-        </h2>
+        Alpha's sovereign chat interface
+      </p>
+
+      {/* New Conversation - prominent */}
+      <button
+        onClick={() => navigate("/chat")}
+        style={{
+          width: "100%",
+          maxWidth: "400px",
+          marginBottom: "32px",
+          padding: "16px 24px",
+          background: colors.primary,
+          border: "none",
+          borderRadius: "16px",
+          color: "white",
+          fontFamily: "Georgia, serif",
+          fontSize: "18px",
+          cursor: "pointer",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+        }}
+      >
+        New Conversation
+      </button>
+
+      {/* Resume Section */}
+      <div style={{ width: "100%", maxWidth: "400px", marginBottom: "32px" }}>
         <div style={{ display: "flex", gap: "8px" }}>
           <input
             type="text"
-            placeholder="Session UUID..."
+            placeholder="Resume by session UUID..."
             value={resumeId}
             onChange={(e) => setResumeId(e.target.value)}
             onKeyDown={handleKeyDown}
             style={{
               flex: 1,
               padding: "12px 16px",
-              background: "#1a1a1a",
-              border: "1px solid #333",
-              borderRadius: "8px",
-              color: "#e0e0e0",
-              fontSize: "14px",
-              outline: "none",
+              background: colors.composer,
+              border: "1px solid rgba(108,106,96,0.2)",
+              borderRadius: "12px",
               fontFamily: "monospace",
+              fontSize: "14px",
+              color: colors.text,
+              outline: "none",
             }}
           />
           <button
             onClick={handleResume}
             style={{
               padding: "12px 24px",
-              background: "#4a9eff",
-              border: "none",
-              borderRadius: "8px",
-              color: "white",
+              background: colors.composer,
+              border: "1px solid rgba(108,106,96,0.2)",
+              borderRadius: "12px",
+              color: colors.text,
+              fontFamily: "Georgia, serif",
               cursor: "pointer",
-              fontSize: "14px",
             }}
           >
             Resume
@@ -133,55 +158,34 @@ export default function HomePage() {
       <div
         style={{
           width: "100%",
-          maxWidth: "500px",
+          maxWidth: "400px",
           display: "flex",
           alignItems: "center",
           gap: "16px",
           marginBottom: "32px",
-          color: "#555",
+          color: colors.muted,
         }}
       >
-        <div style={{ flex: 1, height: "1px", background: "#333" }} />
-        <span>or</span>
-        <div style={{ flex: 1, height: "1px", background: "#333" }} />
+        <div style={{ flex: 1, height: "1px", background: "rgba(108,106,96,0.2)" }} />
+        <span style={{ fontSize: "14px" }}>recent sessions</span>
+        <div style={{ flex: 1, height: "1px", background: "rgba(108,106,96,0.2)" }} />
       </div>
 
-      {/* New Conversation */}
-      <button
-        onClick={() => navigate("/chat")}
-        style={{
-          width: "100%",
-          maxWidth: "500px",
-          padding: "16px",
-          background: "#1a1a1a",
-          border: "1px solid #333",
-          borderRadius: "8px",
-          color: "#e0e0e0",
-          cursor: "pointer",
-          fontSize: "16px",
-          marginBottom: "48px",
-        }}
-      >
-        + New Conversation
-      </button>
-
       {/* Recent Sessions */}
-      <div style={{ width: "100%", maxWidth: "500px" }}>
-        <h2
-          style={{
-            fontSize: "14px",
-            color: "#888",
-            marginBottom: "12px",
-            textTransform: "uppercase",
-            letterSpacing: "1px",
-          }}
-        >
-          Recent
-        </h2>
+      <div style={{ width: "100%", maxWidth: "400px" }}>
         {loading ? (
-          <div style={{ color: "#555" }}>Loading...</div>
+          <div style={{ textAlign: "center", color: colors.muted }}>Loading...</div>
         ) : sessions.length === 0 ? (
-          <div style={{ color: "#555" }}>No sessions yet</div>
+          <div
+            style={{
+              textAlign: "center",
+              color: colors.muted,
+              padding: "32px 0",
+              fontFamily: "Georgia, serif",
+            }}
+          >
+            No sessions yet. Start a new conversation above.
+          </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
             {sessions.map((s) => (
@@ -192,13 +196,13 @@ export default function HomePage() {
                   display: "flex",
                   alignItems: "center",
                   gap: "12px",
-                  padding: "12px 16px",
-                  background: "#1a1a1a",
-                  border: "1px solid #222",
-                  borderRadius: "8px",
-                  color: "#e0e0e0",
-                  cursor: "pointer",
+                  padding: "16px",
+                  background: colors.composer,
+                  border: "1px solid rgba(108,106,96,0.2)",
+                  borderRadius: "12px",
+                  color: colors.text,
                   textAlign: "left",
+                  cursor: "pointer",
                   width: "100%",
                 }}
               >
@@ -206,14 +210,16 @@ export default function HomePage() {
                   style={{
                     fontFamily: "monospace",
                     fontSize: "12px",
-                    color: "#666",
+                    color: colors.muted,
+                    flexShrink: 0,
                   }}
                 >
-                  {s.id.slice(0, 8)}...
+                  {s.id.slice(0, 8)}
                 </span>
                 <span
                   style={{
                     flex: 1,
+                    fontFamily: "Georgia, serif",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
@@ -221,7 +227,13 @@ export default function HomePage() {
                 >
                   {s.title}
                 </span>
-                <span style={{ fontSize: "12px", color: "#555" }}>
+                <span
+                  style={{
+                    fontSize: "12px",
+                    color: colors.muted,
+                    flexShrink: 0,
+                  }}
+                >
                   {formatRelative(s.updated_at)}
                 </span>
               </button>

@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+/* Claude-like base styling */
+body {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
