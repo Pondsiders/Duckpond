@@ -6,8 +6,9 @@ import {
   AssistantRuntimeProvider,
   ThreadPrimitive,
   ComposerPrimitive,
-  MessagePrimitive,
+  useMessage,
 } from "@assistant-ui/react";
+import { MarkdownText } from "../components/MarkdownText";
 import type { AssistantTransportConnectionMetadata } from "@assistant-ui/react";
 
 // State shape matches what backend streams
@@ -70,8 +71,21 @@ const colors = {
 // Base font size multiplier (125%)
 const fontScale = 1.25;
 
+// Helper to extract text from message content
+function useMessageText() {
+  const { content } = useMessage();
+  if (Array.isArray(content)) {
+    return content
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => part.text)
+      .join("\n");
+  }
+  return String(content);
+}
+
 // Claude-styled user message
 function UserMessage() {
+  const text = useMessageText();
   return (
     <div
       style={{
@@ -91,7 +105,7 @@ function UserMessage() {
           fontSize: `${16 * fontScale}px`,
         }}
       >
-        <MessagePrimitive.Content />
+        <MarkdownText text={text} fontScale={fontScale} />
       </div>
     </div>
   );
@@ -99,6 +113,7 @@ function UserMessage() {
 
 // Claude-styled assistant message
 function AssistantMessage() {
+  const text = useMessageText();
   return (
     <div
       style={{
@@ -115,7 +130,7 @@ function AssistantMessage() {
           lineHeight: "1.65",
         }}
       >
-        <MessagePrimitive.Content />
+        <MarkdownText text={text} fontScale={fontScale} />
       </div>
     </div>
   );
