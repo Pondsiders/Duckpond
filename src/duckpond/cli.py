@@ -1,4 +1,4 @@
-"""MOOSE CLI entry point."""
+"""Duckpond CLI entry point."""
 
 import argparse
 import uvicorn
@@ -6,18 +6,18 @@ import uvicorn
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="moose",
-        description="MOOSE - MAlpha Out Of Claude Code SoonEst",
+        prog="duckpond",
+        description="Duckpond - The duck, the pond, and a cozy bench by the water",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # serve command
-    serve_parser = subparsers.add_parser("serve", help="Start the MOOSE server")
+    serve_parser = subparsers.add_parser("serve", help="Start the Duckpond server")
     serve_parser.add_argument(
         "--port", "-p",
         type=int,
-        default=8000,
-        help="Port to listen on (default: 8000)",
+        default=8765,
+        help="Port to listen on (default: 8765)",
     )
     serve_parser.add_argument(
         "--host",
@@ -34,7 +34,7 @@ def main():
 
     if args.command == "serve":
         uvicorn.run(
-            "moose.server:app",
+            "duckpond.server:app",
             host=args.host,
             port=args.port,
             reload=args.reload,

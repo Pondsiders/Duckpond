@@ -1,4 +1,4 @@
-"""MOOSE FastAPI server.
+"""Duckpond server.
 
 Bridges the Claude Agent SDK to assistant-ui via the assistant-stream protocol.
 """
@@ -17,6 +17,8 @@ from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     TextBlock,
+    ToolUseBlock,
+    ToolResultBlock,
 )
 from assistant_stream import create_run, RunController
 from assistant_stream.serialization import DataStreamResponse
@@ -34,8 +36,8 @@ os.environ.setdefault("LANGSMITH_TRACING", "true")
 langfuse = get_client()
 configure_claude_agent_sdk()
 
-# Load Alpha system prompt (stripping frontmatter)
-SYSTEM_PROMPT_PATH = Path("/Volumes/Pondside/.claude/agents/Alpha.md")
+# Load system prompt (stripping frontmatter)
+SYSTEM_PROMPT_PATH = Path("/Volumes/Pondside/.claude/agents/Reciter.md")
 _raw = SYSTEM_PROMPT_PATH.read_text()
 # Strip YAML frontmatter (between --- markers)
 if _raw.startswith("---"):
@@ -48,8 +50,8 @@ else:
 os.environ.setdefault("ANTHROPIC_BASE_URL", "http://alpha-pi:8080")
 
 app = FastAPI(
-    title="MOOSE",
-    description="MAlpha Out Of Claude Code SoonEst",
+    title="Duckpond",
+    description="The duck, the pond, and a cozy bench by the water",
     version="0.1.0",
 )
 
@@ -94,16 +96,16 @@ async def chat(request: ChatRequest):
     """Send a message, stream the response via assistant-stream protocol."""
 
     # Debug: log incoming request
-    print(f"[MOOSE] Received request:")
-    print(f"[MOOSE]   state: {request.state}")
-    print(f"[MOOSE]   commands: {request.commands}")
+    print(f"[Duckpond] Received request:")
+    print(f"[Duckpond]   state: {request.state}")
+    print(f"[Duckpond]   commands: {request.commands}")
 
     # Extract user message from commands
     user_message = extract_user_message(request.commands)
-    print(f"[MOOSE]   extracted message: {user_message}")
+    print(f"[Duckpond]   extracted message: {user_message}")
 
     if not user_message:
-        print("[MOOSE] ERROR: No message found!")
+        print("[Duckpond] ERROR: No message found!")
         return {"error": "No message found in commands"}
 
     async def run_callback(controller: RunController):
@@ -136,15 +138,46 @@ async def chat(request: ChatRequest):
                 # Update state based on message type
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
+                        messages = controller.state["messages"]
+
+                        # Ensure we have an assistant message to append to
+                        if not messages or messages[-1].get("role") != "assistant":
+                            messages.append({
+                                "role": "assistant",
+                                "content": [],  # Array of content parts
+                            })
+
+                        current_msg = messages[-1]
+                        # Ensure content is a list
+                        if isinstance(current_msg.get("content"), str):
+                            current_msg["content"] = [{"type": "text", "text": current_msg["content"]}] if current_msg["content"] else []
+
                         if isinstance(block, TextBlock):
-                            # Append text to current assistant message
-                            messages = controller.state["messages"]
-                            if not messages or messages[-1].get("role") != "assistant":
-                                messages.append({
-                                    "role": "assistant",
-                                    "content": "",
-                                })
-                            messages[-1]["content"] += block.text
+                            # Append or merge text part
+                            content = current_msg["content"]
+                            if content and content[-1].get("type") == "text":
+                                content[-1]["text"] += block.text
+                            else:
+                                content.append({"type": "text", "text": block.text})
+
+                        elif isinstance(block, ToolUseBlock):
+                            # Add tool call part
+                            current_msg["content"].append({
+                                "type": "tool-call",
+                                "toolCallId": block.id,
+                                "toolName": block.name,
+                                "args": block.input,
+                                "argsText": json.dumps(block.input),
+                            })
+
+                        elif isinstance(block, ToolResultBlock):
+                            # Find the matching tool call and update it with result
+                            content = current_msg["content"]
+                            for part in content:
+                                if part.get("type") == "tool-call" and part.get("toolCallId") == block.tool_use_id:
+                                    part["result"] = block.content
+                                    part["isError"] = getattr(block, "is_error", False)
+                                    break
 
                 elif isinstance(message, ResultMessage):
                     controller.state["sessionId"] = message.session_id
@@ -167,14 +200,37 @@ SESSIONS_DIR = Path.home() / ".claude" / "projects" / "-Volumes-Pondside"
 
 
 def extract_display_messages(lines: list[str]) -> list[dict]:
-    """Parse JSONL into displayable messages (text only).
+    """Parse JSONL into displayable messages with text and tool calls.
 
-    We only render text blocks for the UI. Tool uses and results are
-    skipped in display but preserved in the session file. Claude still
-    has full context via the SDK's resume=session_id.
+    Extracts text blocks and tool_use/tool_result pairs for UI rendering.
     """
     messages = []
+    # Track tool results by tool_use_id so we can match them up
+    tool_results = {}
 
+    # First pass: collect all tool results
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        message = record.get("message", {})
+        content_blocks = message.get("content", [])
+
+        if isinstance(content_blocks, list):
+            for block in content_blocks:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tool_use_id = block.get("tool_use_id")
+                    if tool_use_id:
+                        tool_results[tool_use_id] = {
+                            "content": block.get("content", ""),
+                            "is_error": block.get("is_error", False),
+                        }
+
+    # Second pass: build messages with tool calls
     for line in lines:
         if not line.strip():
             continue
@@ -192,25 +248,52 @@ def extract_display_messages(lines: list[str]) -> list[dict]:
         role = message.get("role")
         content_blocks = message.get("content", [])
 
-        # Extract only text blocks
-        text_parts = []
+        # Build content parts array
+        content_parts = []
 
         # Handle case where content is a plain string (not an array)
         if isinstance(content_blocks, str):
-            text_parts.append(content_blocks)
+            if content_blocks:
+                content_parts.append({"type": "text", "text": content_blocks})
         else:
             for block in content_blocks:
                 if isinstance(block, str):
                     # Sometimes content array contains plain strings
-                    text_parts.append(block)
-                elif isinstance(block, dict) and block.get("type") == "text":
-                    text_parts.append(block.get("text", ""))
+                    if block:
+                        content_parts.append({"type": "text", "text": block})
+                elif isinstance(block, dict):
+                    block_type = block.get("type")
 
-        # Combine text blocks into one message
-        if text_parts:
+                    if block_type == "text":
+                        text = block.get("text", "")
+                        if text:
+                            content_parts.append({"type": "text", "text": text})
+
+                    elif block_type == "tool_use":
+                        tool_id = block.get("id")
+                        tool_name = block.get("name", "unknown")
+                        tool_input = block.get("input", {})
+
+                        # Look up the result
+                        result_data = tool_results.get(tool_id, {})
+
+                        content_parts.append({
+                            "type": "tool-call",
+                            "toolCallId": tool_id,
+                            "toolName": tool_name,
+                            "args": tool_input,
+                            "argsText": json.dumps(tool_input),
+                            "result": result_data.get("content"),
+                            "isError": result_data.get("is_error", False),
+                        })
+
+                    # Skip tool_result blocks - they're handled above
+
+        # Only add message if it has content
+        if content_parts:
             messages.append({
                 "role": role,
-                "content": "\n".join(text_parts),
+                "content": content_parts,
                 "uuid": record.get("uuid"),
                 "timestamp": record.get("timestamp"),
             })

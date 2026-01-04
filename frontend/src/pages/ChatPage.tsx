@@ -9,21 +9,48 @@ import {
   useMessage,
 } from "@assistant-ui/react";
 import { MarkdownText } from "../components/MarkdownText";
+import { ToolFallback } from "../components/ToolFallback";
 import type { AssistantTransportConnectionMetadata } from "@assistant-ui/react";
+
+// Content can be a string or an array of parts
+type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown>; argsText: string; result?: unknown; isError?: boolean };
+
+type MessageContent = string | ContentPart[];
 
 // State shape matches what backend streams
 type AgentState = {
-  messages: Array<{ role: string; content: string; uuid?: string; timestamp?: string }>;
+  messages: Array<{ role: string; content: MessageContent; uuid?: string; timestamp?: string }>;
   sessionId: string | null;
 };
+
+// Helper to normalize content to array of parts
+function normalizeContent(content: MessageContent): ContentPart[] {
+  if (!content) {
+    return [];
+  }
+  if (typeof content === "string") {
+    return [{ type: "text", text: content }];
+  }
+  if (!Array.isArray(content)) {
+    console.warn("[Duckpond] Unexpected content type:", typeof content, content);
+    return [];
+  }
+  return content;
+}
 
 // Converter: transform our state -> assistant-ui format
 const converter = (
   state: AgentState,
   meta: AssistantTransportConnectionMetadata
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): any => ({
-  messages: state.messages.map((m, i) => {
+): any => {
+  // Defensive: filter out malformed messages
+  const validMessages = (state.messages || []).filter((m) => m && m.role);
+
+  return {
+  messages: validMessages.map((m, i) => {
     const id = `msg-${String(i).padStart(6, "0")}`;
     const baseMetadata = {
       unstable_state: null,
@@ -32,12 +59,13 @@ const converter = (
       steps: [],
       custom: {},
     };
+    const contentParts = normalizeContent(m.content);
     if (m.role === "user") {
       return {
         id,
         createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
         role: "user" as const,
-        content: [{ type: "text" as const, text: m.content }],
+        content: contentParts,
         attachments: [],
         metadata: baseMetadata,
       };
@@ -46,9 +74,9 @@ const converter = (
         id,
         createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
         role: "assistant" as const,
-        content: [{ type: "text" as const, text: m.content }],
+        content: contentParts,
         status:
-          meta.isSending && i === state.messages.length - 1
+          meta.isSending && i === validMessages.length - 1
             ? { type: "running" as const }
             : { type: "complete" as const, reason: "stop" as const },
         metadata: baseMetadata,
@@ -56,7 +84,8 @@ const converter = (
     }
   }),
   isRunning: meta.isSending,
-});
+};
+};
 
 // Claude dark palette
 const colors = {
@@ -71,16 +100,22 @@ const colors = {
 // Base font size multiplier (125%)
 const fontScale = 1.25;
 
-// Helper to extract text from message content
-function useMessageText() {
+// Helper to extract content parts from message
+function useMessageParts() {
   const { content } = useMessage();
   if (Array.isArray(content)) {
-    return content
-      .filter((part): part is { type: "text"; text: string } => part.type === "text")
-      .map((part) => part.text)
-      .join("\n");
+    return content;
   }
-  return String(content);
+  return [{ type: "text" as const, text: String(content) }];
+}
+
+// Helper to extract just text from message content
+function useMessageText() {
+  const parts = useMessageParts();
+  return parts
+    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
 }
 
 // Claude-styled user message
@@ -111,9 +146,29 @@ function UserMessage() {
   );
 }
 
+// Type guard for tool-call parts
+interface ToolCallPart {
+  type: "tool-call";
+  toolName: string;
+  toolCallId: string;
+  args: Record<string, unknown>;
+  argsText?: string;
+  result?: unknown;
+  isError?: boolean;
+}
+
+function isToolCallPart(part: unknown): part is ToolCallPart {
+  return (
+    typeof part === "object" &&
+    part !== null &&
+    (part as ToolCallPart).type === "tool-call"
+  );
+}
+
 // Claude-styled assistant message
 function AssistantMessage() {
-  const text = useMessageText();
+  const parts = useMessageParts();
+
   return (
     <div
       style={{
@@ -122,16 +177,40 @@ function AssistantMessage() {
         paddingRight: "48px",
       }}
     >
-      <div
-        style={{
-          color: colors.text,
-          fontFamily: "Georgia, serif",
-          fontSize: `${16 * fontScale}px`,
-          lineHeight: "1.65",
-        }}
-      >
-        <MarkdownText text={text} fontScale={fontScale} />
-      </div>
+      {parts.map((part, index) => {
+        // Text content
+        if (part.type === "text") {
+          return (
+            <div
+              key={index}
+              style={{
+                color: colors.text,
+                fontFamily: "Georgia, serif",
+                fontSize: `${16 * fontScale}px`,
+                lineHeight: "1.65",
+              }}
+            >
+              <MarkdownText text={part.text} fontScale={fontScale} />
+            </div>
+          );
+        }
+
+        // Tool call
+        if (isToolCallPart(part)) {
+          return (
+            <ToolFallback
+              key={part.toolCallId || index}
+              toolName={part.toolName}
+              args={part.args}
+              result={part.result}
+              isError={part.isError}
+            />
+          );
+        }
+
+        // Unknown part type - skip
+        return null;
+      })}
     </div>
   );
 }
@@ -186,7 +265,7 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
               fontFamily: "Georgia, serif",
             }}
           >
-            MOOSE
+            Duckpond
           </Link>
           {initialState.sessionId && (
             <span

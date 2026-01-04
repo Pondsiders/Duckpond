@@ -83,7 +83,7 @@ export default function HomePage() {
           marginBottom: "8px",
         }}
       >
-        MOOSE
+        Duckpond
       </h1>
       <p
         style={{
@@ -92,7 +92,7 @@ export default function HomePage() {
           fontFamily: "Georgia, serif",
         }}
       >
-        Alpha's sovereign chat interface
+        The duck, the pond, and a cozy bench by the water
       </p>
 
       {/* New Conversation - prominent */}
