@@ -1,15 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-
-// Claude dark palette
-const colors = {
-  background: "#2b2a27",
-  composer: "#1f1e1b",
-  text: "#eee",
-  muted: "#9a9893",
-  primary: "#ae5630",
-  userBubble: "#393937",
-};
+import { colors } from "../theme";
 
 type Session = {
   id: string;

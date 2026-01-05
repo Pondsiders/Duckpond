@@ -7,9 +7,11 @@ import {
   ThreadPrimitive,
   ComposerPrimitive,
   useMessage,
+  useThread,
 } from "@assistant-ui/react";
 import { MarkdownText } from "../components/MarkdownText";
 import { ToolFallback } from "../components/ToolFallback";
+import { colors, fontScale } from "../theme";
 import type { AssistantTransportConnectionMetadata } from "@assistant-ui/react";
 
 // Content can be a string or an array of parts
@@ -86,19 +88,6 @@ const converter = (
   isRunning: meta.isSending,
 };
 };
-
-// Claude dark palette
-const colors = {
-  background: "#2b2a27",
-  composer: "#1f1e1b",
-  text: "#eee",
-  muted: "#9a9893",
-  primary: "#ae5630",
-  userBubble: "#393937",
-};
-
-// Base font size multiplier (125%)
-const fontScale = 1.25;
 
 // Helper to extract content parts from message
 function useMessageParts() {
@@ -215,6 +204,74 @@ function AssistantMessage() {
   );
 }
 
+// Thinking indicator - shows when Alpha is processing
+function ThinkingIndicator() {
+  const isRunning = useThread((state) => state.isRunning);
+
+  if (!isRunning) return null;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+        padding: "12px 8px",
+        color: colors.muted,
+        fontFamily: "Georgia, serif",
+        fontSize: `${14 * fontScale}px`,
+        fontStyle: "italic",
+      }}
+    >
+      <span
+        style={{
+          display: "inline-block",
+          width: "8px",
+          height: "8px",
+          background: colors.primary,
+          borderRadius: "50%",
+          animation: "pulse 1.5s ease-in-out infinite",
+        }}
+      />
+      Alpha is thinking...
+      <style>
+        {`
+          @keyframes pulse {
+            0%, 100% { opacity: 0.4; transform: scale(0.8); }
+            50% { opacity: 1; transform: scale(1); }
+          }
+        `}
+      </style>
+    </div>
+  );
+}
+
+// Scroll handler component - must be inside AssistantRuntimeProvider
+function AutoScrollHandler({ scrollRef }: { scrollRef: React.RefObject<HTMLElement | null> }) {
+  const isRunning = useThread((state) => state.isRunning);
+  const messages = useThread((state) => state.messages);
+
+  // Scroll when isRunning changes OR when messages change
+  // But only if user is already near the bottom (not reading above)
+  useEffect(() => {
+    if (scrollRef.current) {
+      const el = scrollRef.current;
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const isNearBottom = distanceFromBottom < 150; // within 150px of bottom
+
+      if (isNearBottom) {
+        requestAnimationFrame(() => {
+          if (scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          }
+        });
+      }
+    }
+  }, [isRunning, messages.length, scrollRef]);
+
+  return null;
+}
+
 function ThreadView({ initialState }: { initialState: AgentState }) {
   const runtime = useAssistantTransportRuntime({
     api: "/api/chat",
@@ -224,6 +281,7 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
   });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
 
   // Scroll to bottom on initial load (small delay to let messages render)
   useEffect(() => {
@@ -281,7 +339,8 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
         </header>
 
         {/* Messages */}
-        <main style={{ flex: 1, overflow: "auto", padding: "24px" }}>
+        <main ref={mainRef} style={{ flex: 1, overflow: "auto", padding: "24px" }}>
+          <AutoScrollHandler scrollRef={mainRef} />
           <div style={{ maxWidth: "768px", margin: "0 auto" }}>
             <ThreadPrimitive.Root>
               <ThreadPrimitive.Viewport>
@@ -291,6 +350,7 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
                     AssistantMessage,
                   }}
                 />
+                <ThinkingIndicator />
                 <div ref={messagesEndRef} />
               </ThreadPrimitive.Viewport>
             </ThreadPrimitive.Root>

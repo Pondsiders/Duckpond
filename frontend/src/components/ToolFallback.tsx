@@ -1,17 +1,7 @@
 import type { FC } from "react";
 import { ChevronDown, ChevronRight, Terminal, Check, Loader2 } from "lucide-react";
 import { useState } from "react";
-
-// Claude dark palette
-const colors = {
-  background: "#2b2a27",
-  surface: "#1f1e1b",
-  text: "#eee",
-  muted: "#9a9893",
-  primary: "#ae5630",
-  codeBg: "#1a1a18",
-  border: "rgba(108,106,96,0.3)",
-};
+import { colors } from "../theme";
 
 interface ToolFallbackProps {
   toolName: string;
