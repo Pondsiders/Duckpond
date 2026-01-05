@@ -63,13 +63,17 @@ async def list_sessions(limit: int = 20):
                 record = json.loads(line)
                 if record.get("type") == "user":
                     content = record.get("message", {}).get("content", [])
-                    for block in content:
-                        if isinstance(block, str):
-                            title = block[:50]
-                            break
-                        elif isinstance(block, dict) and block.get("type") == "text":
-                            title = block.get("text", "")[:50]
-                            break
+                    # Content can be a string or an array of blocks
+                    if isinstance(content, str):
+                        title = content[:50]
+                    else:
+                        for block in content:
+                            if isinstance(block, str):
+                                title = block[:50]
+                                break
+                            elif isinstance(block, dict) and block.get("type") == "text":
+                                title = block.get("text", "")[:50]
+                                break
                     break
 
             sessions.append({

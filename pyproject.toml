@@ -2,7 +2,7 @@
 name = "duckpond"
 version = "0.1.0"
 description = "The duck, the pond, and a cozy bench by the water where we sit and talk shit"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.34",

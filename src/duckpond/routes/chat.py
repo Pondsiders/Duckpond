@@ -13,6 +13,7 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     ClaudeAgentOptions,
     AssistantMessage,
+    UserMessage,
     ResultMessage,
     TextBlock,
     ToolUseBlock,
@@ -153,8 +154,16 @@ async def chat(request: ChatRequest):
                                 "args": block.input,
                                 "argsText": json.dumps(block.input),
                             })
+                            # Emit tool-call-begin event for frontend
+                            from assistant_stream.assistant_stream_chunk import ToolCallBeginChunk
+                            controller._flush_and_put_chunk(ToolCallBeginChunk(
+                                tool_call_id=block.id,
+                                tool_name=block.name,
+                            ))
+                            print(f"[Duckpond] Emitted ToolCallBeginChunk for {block.id}")
 
                         elif isinstance(block, ToolResultBlock):
+                            # Update state for persistence
                             content = current_msg["content"]
                             for part in content:
                                 if (
@@ -164,6 +173,36 @@ async def chat(request: ChatRequest):
                                     part["result"] = block.content
                                     part["isError"] = getattr(block, "is_error", False)
                                     break
+                            # Emit tool-result event for frontend
+                            controller.add_tool_result(block.tool_use_id, block.content)
+                            print(f"[Duckpond] Emitted ToolResultChunk for {block.tool_use_id}")
+
+                elif isinstance(message, UserMessage):
+                    # UserMessage contains tool results!
+                    print(f"[Duckpond] UserMessage content: {message.content}")
+                    for block in message.content:
+                        if isinstance(block, ToolResultBlock):
+                            print(f"[Duckpond] Found ToolResultBlock in UserMessage for {block.tool_use_id}")
+                            # Update state so frontend can see the result
+                            messages_list = controller.state["messages"]
+                            for msg_idx, msg in enumerate(messages_list):
+                                if msg.get("role") == "assistant":
+                                    content = msg.get("content", [])
+                                    for part_idx, part in enumerate(content):
+                                        if (
+                                            part.get("type") == "tool-call"
+                                            and part.get("toolCallId") == block.tool_use_id
+                                        ):
+                                            # Force state update through proxy
+                                            updated_part = dict(part)
+                                            updated_part["result"] = block.content
+                                            updated_part["isError"] = block.is_error
+                                            controller.state["messages"][msg_idx]["content"][part_idx] = updated_part
+                                            print(f"[Duckpond] Updated state for tool {block.tool_use_id}")
+                                            break
+                            # Also emit the event
+                            controller.add_tool_result(block.tool_use_id, block.content)
+                            print(f"[Duckpond] Emitted ToolResultChunk for {block.tool_use_id}")
 
                 elif isinstance(message, ResultMessage):
                     controller.state["sessionId"] = message.session_id
