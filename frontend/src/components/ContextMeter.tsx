@@ -5,6 +5,9 @@
  * - Green: comfortable, plenty of runway
  * - Yellow: getting close (within 10% of threshold)
  * - Red: at or past threshold, compact imminent
+ *
+ * Token count comes from Eavesdrop calling Anthropic's count_tokens endpoint,
+ * stored in Redis, and fetched via /api/context/{session_id}.
  */
 
 import { colors } from "../theme";
@@ -13,18 +16,12 @@ import { colors } from "../theme";
 const COMPACT_THRESHOLD_PERCENT = 77.5;
 const CONTEXT_WINDOW_SIZE = 200_000;
 
-type ContextUsage = {
-  input_tokens?: number;
-  cache_creation_input_tokens?: number;
-  cache_read_input_tokens?: number;
-};
-
 type ContextMeterProps = {
-  usage: ContextUsage | null | undefined;
+  inputTokens: number | null | undefined;
 };
 
-export function ContextMeter({ usage }: ContextMeterProps) {
-  if (!usage) {
+export function ContextMeter({ inputTokens }: ContextMeterProps) {
+  if (inputTokens == null) {
     return (
       <span style={{ color: colors.muted, fontSize: "0.875rem" }}>
         —%
@@ -32,13 +29,7 @@ export function ContextMeter({ usage }: ContextMeterProps) {
     );
   }
 
-  // Sum all input token types (they all count against context window)
-  const totalTokens =
-    (usage.input_tokens ?? 0) +
-    (usage.cache_creation_input_tokens ?? 0) +
-    (usage.cache_read_input_tokens ?? 0);
-
-  const percentUsed = (totalTokens / CONTEXT_WINDOW_SIZE) * 100;
+  const percentUsed = (inputTokens / CONTEXT_WINDOW_SIZE) * 100;
   const percentToCompact = COMPACT_THRESHOLD_PERCENT - percentUsed;
 
   // Determine color based on distance to compact threshold
@@ -69,7 +60,7 @@ export function ContextMeter({ usage }: ContextMeterProps) {
       }}
       title={title}
     >
-      {percentUsed.toFixed(0)}%
+      {percentUsed.toFixed(1)}%
     </span>
   );
 }

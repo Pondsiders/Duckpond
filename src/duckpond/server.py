@@ -13,7 +13,7 @@ from langfuse import get_client
 from langsmith.integrations.claude_agent_sdk import configure_claude_agent_sdk
 
 from .config import configure_environment
-from .routes import chat_router, sessions_router
+from .routes import chat_router, context_router, sessions_router
 
 # Configure environment and instrumentation
 configure_environment()
@@ -38,6 +38,7 @@ app.add_middleware(
 
 # Mount routes
 app.include_router(chat_router)
+app.include_router(context_router)
 app.include_router(sessions_router)
 
 

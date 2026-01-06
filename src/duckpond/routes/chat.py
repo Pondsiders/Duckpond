@@ -5,7 +5,11 @@ via the assistant-stream protocol.
 """
 
 import json
+import socket
 
+import pendulum
+
+import logfire
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -25,12 +29,30 @@ from assistant_stream import create_run, RunController
 from assistant_stream.serialization import DataStreamResponse
 
 from ..config import CWD, ALLOWED_TOOLS, load_system_prompt
-from ..hooks import subvox_prompt_hook, subvox_stop_hook
+from ..hooks import subvox_prompt_hook, subvox_stop_hook, inject_session_tag
 
 router = APIRouter()
 
 # Load system prompt once at module import
 SYSTEM_PROMPT = load_system_prompt()
+
+
+def pso8601_date() -> str:
+    """Return current date in PSO-8601 format: Wed Dec 31 2025"""
+    now = pendulum.now()
+    return now.format("ddd MMM DD YYYY")
+
+
+def pso8601_time() -> str:
+    """Return current time in PSO-8601 format: 4:23 PM (no leading zero)"""
+    now = pendulum.now()
+    return now.format("h:mm A")
+
+
+def pso8601_datetime() -> str:
+    """Return full datetime in PSO-8601 format: Wed Dec 31 2025, 4:23 PM"""
+    now = pendulum.now()
+    return now.format("ddd MMM DD YYYY, h:mm A")
 
 
 class AssistantTransportCommand(BaseModel):
@@ -49,36 +71,118 @@ class ChatRequest(BaseModel):
     tools: list | None = None
 
 
-def extract_user_message(commands: list[AssistantTransportCommand]) -> str | None:
-    """Extract the user message text from add-message commands."""
+def extract_user_message(commands: list[AssistantTransportCommand]) -> tuple[list[dict], list[dict]] | tuple[None, None]:
+    """Extract the user message content from add-message commands.
+
+    Returns two lists:
+    - sdk_content: Content parts formatted for the Claude Agent SDK
+    - ui_content: Content parts formatted for assistant-ui (for state/display)
+    """
     for cmd in commands:
         if cmd.type == "add-message" and cmd.message:
             # Message parts can be in "parts" or "content"
             parts = cmd.message.get("parts") or cmd.message.get("content", [])
+            sdk_content = []
+            ui_content = []
+
             for part in parts:
                 if part.get("type") == "text":
-                    return part.get("text", "")
-    return None
+                    text = part.get("text", "").strip()
+                    if text:
+                        sdk_content.append({"type": "text", "text": text})
+                        ui_content.append({"type": "text", "text": text})
+                elif part.get("type") == "image":
+                    # Image part — extract the data URL
+                    image_data = part.get("image", "")
+                    if image_data:
+                        # Keep original format for UI display
+                        ui_content.append({"type": "image", "image": image_data})
+
+                        # Convert to Claude API format for SDK
+                        if image_data.startswith("data:"):
+                            # Parse data URL: data:image/png;base64,XXXXX
+                            header, data = image_data.split(",", 1)
+                            media_type = header.split(":")[1].split(";")[0]
+                            sdk_content.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": data,
+                                }
+                            })
+
+            if sdk_content:
+                return sdk_content, ui_content
+    return None, None
 
 
 @router.post("/api/chat")
 async def chat(request: ChatRequest):
     """Send a message, stream the response via assistant-stream protocol."""
 
-    user_message = extract_user_message(request.commands)
+    sdk_content, ui_content = extract_user_message(request.commands)
 
-    if not user_message:
+    if not sdk_content:
         return {"error": "No message found in commands"}
+
+    # Check if this is the first message of a session (no session ID yet)
+    session_id = request.state.get("sessionId") if request.state else None
+    is_session_start = session_id is None
+
+    # Build context-enriched message stream
+    async def context_enriched_prompt():
+        """Yield context messages, then the user's prompt."""
+
+        # Build context parts
+        context_parts = []
+
+        # Session start: hostname and date
+        if is_session_start:
+            hostname = socket.gethostname()
+            context_parts.append(f"Host: {hostname}")
+            context_parts.append(f"Date: {pso8601_date()}")
+            logfire.info("Injecting session start context", hostname=hostname)
+
+        # Always: timestamp
+        context_parts.append(f"Time: {pso8601_time()}")
+
+        # Inject context as a system-style message
+        if context_parts:
+            context_text = "[Context] " + " | ".join(context_parts)
+            yield {
+                "type": "user",
+                "message": {"role": "user", "content": context_text},
+                "parent_tool_use_id": None,
+            }
+
+        # Now the actual user message
+        if len(sdk_content) == 1 and sdk_content[0].get("type") == "text":
+            # Text-only: yield as string content
+            yield {
+                "type": "user",
+                "message": {"role": "user", "content": sdk_content[0]["text"]},
+                "parent_tool_use_id": None,
+            }
+        else:
+            # Multi-part (text + images): yield as content list
+            yield {
+                "type": "user",
+                "message": {"role": "user", "content": sdk_content},
+                "parent_tool_use_id": None,
+            }
+
+    query_content = context_enriched_prompt()
 
     async def run_callback(controller: RunController):
         # Initialize state if needed
         if controller.state is None:
             controller.state = {"messages": [], "sessionId": None}
 
-        # Add user message to state
+        # Add user message to state (store UI format for display)
         controller.state["messages"].append({
             "role": "user",
-            "content": user_message,
+            "content": ui_content,
         })
 
         # Get session ID from state if present
@@ -92,13 +196,13 @@ async def chat(request: ChatRequest):
             cwd=CWD,
             include_partial_messages=True,
             hooks={
-                "UserPromptSubmit": [HookMatcher(hooks=[subvox_prompt_hook])],
+                "UserPromptSubmit": [HookMatcher(hooks=[inject_session_tag, subvox_prompt_hook])],
                 "Stop": [HookMatcher(hooks=[subvox_stop_hook])],
             },
         )
 
         async with ClaudeSDKClient(options=options) as client:
-            await client.query(user_message)
+            await client.query(query_content)
 
             accumulated_text = ""
 

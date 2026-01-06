@@ -5,10 +5,15 @@
  * Backend streams state via assistant-stream; we just render it.
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { ArrowUp, Square } from "lucide-react";
 import { ContextMeter } from "../components/ContextMeter";
+import {
+  ComposerAttachments,
+  ComposerAddAttachment,
+  UserMessageAttachments,
+} from "../components/Attachment";
 import {
   useAssistantTransportRuntime,
   AssistantRuntimeProvider,
@@ -16,6 +21,7 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
   AssistantIf,
+  SimpleImageAttachmentAdapter,
 } from "@assistant-ui/react";
 import type {
   AssistantTransportConnectionMetadata,
@@ -46,12 +52,6 @@ type BackendToolCallPart = {
 type BackendContentPart = BackendTextPart | BackendToolCallPart;
 type BackendMessageContent = string | BackendContentPart[];
 
-type ContextUsage = {
-  input_tokens?: number;
-  cache_creation_input_tokens?: number;
-  cache_read_input_tokens?: number;
-};
-
 type AgentState = {
   messages: Array<{
     role: string;
@@ -60,7 +60,6 @@ type AgentState = {
     timestamp?: string;
   }>;
   sessionId: string | null;
-  contextUsage?: ContextUsage | null;
 };
 
 // -----------------------------------------------------------------------------
@@ -100,13 +99,30 @@ const converter = (state: AgentState, meta: AssistantTransportConnectionMetadata
       };
       const contentParts = normalizeContent(m.content);
 
+      // Extract image parts as attachments for MessagePrimitive.Attachments
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const attachments = contentParts
+        .filter((p): p is { type: "image"; image: string } =>
+          p.type === "image" && "image" in p
+        )
+        .map((p, idx) => ({
+          id: `${id}-attachment-${idx}`,
+          type: "image" as const,
+          name: `image-${idx}.png`,
+          content: [{ type: "image" as const, image: p.image }],
+          status: { type: "complete" as const },
+        }));
+
+      // Filter out image parts from content (they're in attachments now)
+      const textContent = contentParts.filter((p) => p.type !== "image");
+
       if (m.role === "user") {
         return {
           id,
           createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
           role: "user" as const,
-          content: contentParts,
-          attachments: [],
+          content: textContent,
+          attachments,
           metadata: baseMetadata,
         };
       } else {
@@ -339,10 +355,13 @@ const UserMessage = () => {
     <MessagePrimitive.Root
       style={{
         display: "flex",
-        justifyContent: "flex-end",
+        flexDirection: "column",
+        alignItems: "flex-end",
         marginBottom: "16px",
       }}
     >
+      {/* Attachments shown above the bubble */}
+      <UserMessageAttachments />
       <div
         style={{
           padding: "12px 16px",
@@ -395,31 +414,59 @@ const AssistantMessage = () => {
 // -----------------------------------------------------------------------------
 
 function ThreadView({ initialState }: { initialState: AgentState }) {
-  // Track context usage from state updates
-  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(
-    initialState.contextUsage ?? null
-  );
-  const contextUsageRef = useRef(contextUsage);
+  // Track accurate token count from Eavesdrop (via /api/context endpoint)
+  const [inputTokens, setInputTokens] = useState<number | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(initialState.sessionId);
+  const [messageCount, setMessageCount] = useState(initialState.messages.length);
 
-  // Converter that also captures contextUsage updates
-  const converterWithUsage = useCallback(
+  // Fetch token count when session ID is available or messages change
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const fetchTokenCount = async () => {
+      try {
+        const response = await fetch(`/api/context/${sessionId}`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.input_tokens != null) {
+            setInputTokens(data.input_tokens);
+          }
+        }
+      } catch (err) {
+        console.warn("[Duckpond] Failed to fetch token count:", err);
+      }
+    };
+
+    // Delay to let Eavesdrop count tokens (~500-600ms) and stash in Redis
+    const timer = setTimeout(fetchTokenCount, 1000);
+    return () => clearTimeout(timer);
+  }, [sessionId, messageCount]);
+
+  // Converter that captures sessionId updates and tracks message count
+  const converterWithTracking = useCallback(
     (state: AgentState, meta: AssistantTransportConnectionMetadata) => {
-      // Capture contextUsage when state updates
-      if (state.contextUsage && state.contextUsage !== contextUsageRef.current) {
-        contextUsageRef.current = state.contextUsage;
-        // Schedule state update outside render
-        setTimeout(() => setContextUsage(state.contextUsage ?? null), 0);
+      // Capture sessionId when it appears
+      if (state.sessionId && state.sessionId !== sessionId) {
+        setTimeout(() => setSessionId(state.sessionId), 0);
+      }
+      // Track message count to trigger token count refresh
+      const newLength = (state.messages || []).length;
+      if (newLength !== messageCount) {
+        setTimeout(() => setMessageCount(newLength), 0);
       }
       return converter(state, meta);
     },
-    []
+    [sessionId, messageCount]
   );
 
   const runtime = useAssistantTransportRuntime({
     api: "/api/chat",
     headers: {},
     initialState,
-    converter: converterWithUsage,
+    converter: converterWithTracking,
+    adapters: {
+      attachments: new SimpleImageAttachmentAdapter(),
+    },
   });
 
   return (
@@ -463,7 +510,7 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
               gap: "16px",
             }}
           >
-            {initialState.sessionId && (
+            {sessionId && (
               <span
                 style={{
                   fontFamily: "monospace",
@@ -471,10 +518,10 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
                   color: colors.muted,
                 }}
               >
-                {initialState.sessionId.slice(0, 8)}...
+                {sessionId.slice(0, 8)}...
               </span>
             )}
-            <ContextMeter usage={contextUsage} />
+            <ContextMeter inputTokens={inputTokens} />
           </div>
         </header>
 
@@ -558,6 +605,9 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
                   "0 0.25rem 1.25rem rgba(0,0,0,0.4), 0 0 0 0.5px rgba(108,106,96,0.15)",
               }}
             >
+              {/* Attachment previews */}
+              <ComposerAttachments />
+
               <ComposerPrimitive.Input
                 placeholder="Talk to Alpha..."
                 style={{
@@ -580,6 +630,9 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
                   gap: "12px",
                 }}
               >
+                {/* Add attachment button */}
+                <ComposerAddAttachment />
+
                 <span
                   style={{
                     fontFamily: "Georgia, serif",

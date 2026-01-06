@@ -11,6 +11,9 @@ dependencies = [
     "langfuse",
     "langsmith[claude-agent-sdk]",
     "langsmith[otel]",
+    "redis>=7.1.0",
+    "logfire>=4.16.0",
+    "pendulum>=3.0.0",
 ]
 
 [project.scripts]
