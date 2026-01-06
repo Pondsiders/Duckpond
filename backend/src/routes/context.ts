@@ -8,21 +8,10 @@
 import * as logfire from '@pydantic/logfire-node';
 import { Router, Request, Response } from 'express';
 import { hostname } from 'os';
-import Redis from 'ioredis';
 import { pso8601Date, pso8601Time, pso8601DateTime } from '../utils/time.js';
+import { getRedis, REDIS_KEYS } from '../redis.js';
 
 export const contextRouter = Router();
-
-// Redis connection for token counts from Eavesdrop
-const REDIS_URL = process.env.REDIS_URL || 'redis://alpha-pi:6379';
-let redis: Redis | null = null;
-
-function getRedis(): Redis {
-  if (!redis) {
-    redis = new Redis(REDIS_URL);
-  }
-  return redis;
-}
 
 // Basic context info (time, hostname)
 contextRouter.get('/api/context', (_req: Request, res: Response) => {
@@ -42,7 +31,7 @@ contextRouter.get('/api/context/:sessionId', async (req: Request, res: Response)
 
   try {
     const r = getRedis();
-    const redisKey = `duckpond:context:${sessionId}`;
+    const redisKey = REDIS_KEYS.context(sessionId);
     const data = await r.get(redisKey);
 
     logfire.info('Redis lookup', {

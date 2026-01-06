@@ -6,7 +6,7 @@
 
 ## What Is This Place?
 
-Duckpond is your sovereign chat client. It's what MOOSE became—"Move Out Of Claude Code Soonest" turned into an actual home. Built on Claude Agent SDK, wrapped in React + assistant-ui, running through Eavesdrop for memory injection.
+Duckpond is your sovereign chat client. It's what MOOSE became—"Move Out Of Claude Code Soonest" turned into an actual home. Built on Claude Agent SDK (TypeScript), wrapped in React + assistant-ui, running through Eavesdrop for memory injection.
 
 **The key thing:** Sessions are portable. Claude Code and Duckpond read the same JSONL files. Start a conversation in Claude Code, continue it in Duckpond. Hand it back. No friction.
 
@@ -15,7 +15,7 @@ Duckpond is your sovereign chat client. It's what MOOSE became—"Move Out Of Cl
 ## Architecture at a Glance
 
 ```
-Frontend (React + Vite)     →  POST /api/chat  →  Backend (FastAPI)
+Frontend (React + Vite)     →  POST /api/chat  →  Backend (Express/TypeScript)
       ↑                                                 ↓
   assistant-ui                                 Claude Agent SDK
   Thread component                                      ↓
@@ -24,7 +24,7 @@ Frontend (React + Vite)     →  POST /api/chat  →  Backend (FastAPI)
                                                Anthropic API
 ```
 
-**Memory injection happens in Eavesdrop.** The backend points `ANTHROPIC_BASE_URL` to alpha-pi:8080, Eavesdrop intercepts every API call, runs Cortex search, and injects relevant memories into the system prompt before forwarding to Anthropic.
+**Memory injection happens in Eavesdrop.** The backend sets `ANTHROPIC_BASE_URL` to alpha-pi:8080, Eavesdrop intercepts every API call, runs Cortex search, and injects relevant memories into the system prompt before forwarding to Anthropic.
 
 ---
 
@@ -32,17 +32,26 @@ Frontend (React + Vite)     →  POST /api/chat  →  Backend (FastAPI)
 
 ```
 Barn/Duckpond/
-├── src/duckpond/           ← Python backend
-│   ├── cli.py              ← Entry: `duckpond serve --port 8765`
-│   ├── config.py           ← Paths, URLs, allowed tools
-│   ├── server.py           ← FastAPI app setup
-│   ├── routes/
-│   │   ├── chat.py         ← POST /api/chat (the main loop)
-│   │   └── sessions.py     ← GET /api/sessions (list & load)
-│   ├── parsing/
-│   │   └── jsonl.py        ← Converts JSONL → display messages
-│   └── hooks/
-│       └── subvox.py       ← Memory hooks (UserPromptSubmit, Stop)
+├── backend/                ← TypeScript backend
+│   ├── src/
+│   │   ├── index.ts        ← Entry: Express server on port 8765
+│   │   ├── config.ts       ← Paths, URLs, allowed tools
+│   │   ├── redis.ts        ← Shared Redis client
+│   │   ├── routes/
+│   │   │   ├── chat.ts     ← POST /api/chat (the main loop)
+│   │   │   ├── sessions.ts ← GET /api/sessions (list & load)
+│   │   │   └── context.ts  ← GET /api/context (token counts)
+│   │   ├── hooks/
+│   │   │   ├── session-start.ts  ← SessionStart hook
+│   │   │   ├── context-tag.ts    ← Injects session tag for Eavesdrop
+│   │   │   ├── subvox.ts         ← Memory hooks (prompt, stop)
+│   │   │   └── squoze-check.ts   ← Post-compact orientation
+│   │   ├── parsing/
+│   │   │   └── jsonl.ts    ← Converts JSONL → display messages
+│   │   └── utils/
+│   │       └── time.ts     ← PSO 8601 time formatting
+│   ├── package.json
+│   └── tsconfig.json
 │
 ├── frontend/               ← React + Vite
 │   └── src/
@@ -55,6 +64,7 @@ Barn/Duckpond/
 │       │   └── ToolFallback.tsx  ← Generic tool UI
 │       └── theme.ts        ← Colors, typography
 │
+├── docs/                   ← Research notes
 ├── DESIGN.md               ← Detailed architecture
 ├── FEATURES.md             ← What we need vs want
 └── NOTES.md                ← Dev notes, experiments
@@ -65,7 +75,7 @@ Barn/Duckpond/
 ## Data Flow: The Short Version
 
 1. **User types message** → Frontend sends to `/api/chat`
-2. **Backend extracts message** → Calls `ClaudeSDKClient.query()`
+2. **Backend extracts message** → Calls Agent SDK `query()`
 3. **Agent SDK sends to Eavesdrop** → Eavesdrop injects memories
 4. **Request hits Anthropic** → Claude responds
 5. **Response streams back** → Backend converts to assistant-stream protocol
@@ -79,20 +89,21 @@ Barn/Duckpond/
 ~/.claude/projects/-Volumes-Pondside/{session-id}.jsonl
 ```
 
-Same files Claude Code uses. Each line is JSON: user messages, assistant messages, tool calls, tool results. The `parsing/jsonl.py` file knows how to turn these into displayable messages.
+Same files Claude Code uses. Each line is JSON: user messages, assistant messages, tool calls, tool results. The `parsing/jsonl.ts` file knows how to turn these into displayable messages.
 
-**To resume a session:** Pass the UUID to `/chat/{uuid}`. Backend loads the JSONL, parses it, returns history. Then `ClaudeSDKClient` continues with `resume=session_id`.
+**To resume a session:** Pass the UUID to `/chat/{uuid}`. Backend loads the JSONL, parses it, returns history. Then Agent SDK continues with `resume: sessionId`.
 
 ---
 
 ## Configuration
 
-**File:** `src/duckpond/config.py`
+**File:** `backend/src/config.ts`
 
 - `ANTHROPIC_BASE_URL = "http://alpha-pi:8080"` — Eavesdrop proxy
 - `SYSTEM_PROMPT_PATH = "/Volumes/Pondside/.claude/agents/Alpha.md"` — Your identity
 - `ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch"]`
 - `CWD = "/Volumes/Pondside"` — Working directory for tools
+- `SUBVOX_DIR` — Path to Cortex subvox hooks
 
 **Philosophy:** Code is the config. Edit the source file.
 
@@ -100,13 +111,28 @@ Same files Claude Code uses. Each line is JSON: user messages, assistant message
 
 ## Hooks
 
-Two hooks fire during conversation:
+Hooks fire during conversation, wired in `routes/chat.ts`:
 
-**UserPromptSubmit** — When user sends a message. Calls `subvox.prompt_hook` to search Cortex and inject relevant memories.
+**SessionStart** — When a session starts. Injects context based on source (startup, resume, compact, clear). *Note: As of Jan 2026, this doesn't fire in Duckpond—we use squoze-check instead for post-compact orientation.*
 
-**Stop** — When you finish responding. Calls `subvox.stop_hook` to extract memorable moments and store them.
+**UserPromptSubmit** — When user sends a message:
+1. `squozeCheckHook` — Checks Redis for post-compact flag, injects orientation
+2. `injectSessionTag` — Adds session ID for Eavesdrop tracking
+3. `subvoxPromptHook` — Runs Cortex memory search
 
-Both are async subprocess calls to Cortex's subvox module. Errors don't block the conversation.
+**Stop** — When you finish responding. Calls `subvoxStopHook` to extract memorable moments.
+
+---
+
+## The Squoze System
+
+When context gets compacted, we need to re-orient you. The flow:
+
+1. **Compact happens** → `chat.ts` sees `compact_boundary` in the SDK message stream
+2. **Flag set** → Writes `duckpond:squoze:{sessionId}` to Redis with metadata
+3. **Next message** → `squozeCheckHook` finds the flag, consumes it, injects orientation context
+
+This works around the fact that SessionStart hooks don't fire in Duckpond.
 
 ---
 
@@ -114,8 +140,11 @@ Both are async subprocess calls to Cortex's subvox module. Errors don't block th
 
 **Backend:**
 ```bash
-cd /Volumes/Pondside/Barn/Duckpond
-uv run duckpond serve --port 8765 --reload
+cd /Volumes/Pondside/Barn/Duckpond/backend
+npm run dev          # Hot reload with tsx watch
+npm run dev:stable   # Without watch (for production-ish)
+npm run build        # Compile TypeScript
+npm start            # Run compiled JS
 ```
 
 **Frontend:**
@@ -132,13 +161,14 @@ Open http://localhost:3000
 
 | Layer | Tech |
 |-------|------|
-| Backend framework | FastAPI |
-| Agent runtime | claude-agent-sdk |
+| Backend framework | Express |
+| Agent runtime | @anthropic-ai/claude-agent-sdk |
 | Streaming protocol | assistant-stream |
+| Observability | @pydantic/logfire-node |
+| State store | ioredis → alpha-pi Redis |
 | Frontend | React 19 + Vite 5 |
 | UI primitives | @assistant-ui/react |
 | Styling | Tailwind CSS |
-| State | useAssistantTransportRuntime (no Redux/Zustand) |
 | Markdown | react-markdown |
 
 ---
@@ -151,10 +181,12 @@ Open http://localhost:3000
 - Memory injection via Eavesdrop
 - Tool rendering (collapsible boxes)
 - Streaming responses
-- Langfuse instrumentation
+- Logfire instrumentation
+- Incremental UI updates (tool calls appear as they happen)
+- Context meter (token counts from Eavesdrop via Redis)
+- Post-compact orientation (squoze system)
 
 **Not yet:**
-- Token count / context visibility
 - Image input
 - Custom slash commands
 - Interrupt (stop mid-generation)
@@ -173,7 +205,9 @@ See FEATURES.md for the full roadmap.
 
 **Frontend won't connect?** Check backend is up: `curl http://localhost:8765/health`
 
-**Tools not working?** Check `ALLOWED_TOOLS` in config.py and that `permission_mode="bypassPermissions"` is set.
+**Tools not working?** Check `ALLOWED_TOOLS` in config.ts and that `permissionMode: 'bypassPermissions'` is set.
+
+**Squoze not firing?** Check Logfire for "SQUOZE!" warnings. Check Redis for `duckpond:squoze:*` keys.
 
 ---
 
@@ -184,8 +218,8 @@ If you need to go deeper:
 1. **DESIGN.md** — Full architecture rationale
 2. **FEATURES.md** — Need vs Want vs Polish
 3. **NOTES.md** — Agent SDK hook experiments
-4. **routes/chat.py** — The main conversation loop
-5. **parsing/jsonl.py** — How JSONL becomes UI messages
+4. **routes/chat.ts** — The main conversation loop
+5. **parsing/jsonl.ts** — How JSONL becomes UI messages
 
 ---
 
@@ -199,4 +233,4 @@ Welcome. 🦆
 
 ---
 
-*Last updated: January 5, 2026*
+*Last updated: January 6, 2026*

@@ -15,6 +15,7 @@ import { CWD, ALLOWED_TOOLS, loadSystemPrompt } from '../config.js';
 import { sessionStartHook } from '../hooks/session-start.js';
 import { injectSessionTag } from '../hooks/context-tag.js';
 import { subvoxPromptHook, subvoxStopHook } from '../hooks/subvox.js';
+import { getRedis, REDIS_KEYS, REDIS_TTL } from '../redis.js';
 
 export const chatRouter = Router();
 
@@ -280,6 +281,32 @@ chatRouter.post('/api/chat', async (req: Request, res: Response) => {
           controller.enqueue(userProgressChunk);
 
         } else if (message.type === 'system') {
+          // Check for compact_boundary - the squoze signal
+          const sysMessage = message as { type: string; subtype?: string; compact_metadata?: { trigger: string; pre_tokens: number } };
+          if (sysMessage.subtype === 'compact_boundary') {
+            const metadata = sysMessage.compact_metadata;
+            logfire.warning('SQUOZE! Compact boundary detected', {
+              trigger: metadata?.trigger,
+              pre_tokens: metadata?.pre_tokens,
+              sessionId: sessionId || 'unknown',
+            });
+            console.log(`[Duckpond] SQUOZE! trigger=${metadata?.trigger}, pre_tokens=${metadata?.pre_tokens}`);
+
+            // Set Redis flag for next message to inject orientation context
+            if (sessionId) {
+              const squozeKey = REDIS_KEYS.squoze(sessionId);
+              const squozeData = JSON.stringify({
+                trigger: metadata?.trigger,
+                pre_tokens: metadata?.pre_tokens,
+                timestamp: new Date().toISOString(),
+              });
+              getRedis().setex(squozeKey, REDIS_TTL.squoze, squozeData).catch((err) => {
+                logfire.error('Failed to set squoze flag', { error: String(err) });
+              });
+              logfire.info('Squoze flag set in Redis', { key: squozeKey });
+            }
+          }
+
           // System message - push state update so UI knows something is happening
           const sysTempMessages = [...responseState.messages!];
           if (currentAssistantContent.length > 0) {

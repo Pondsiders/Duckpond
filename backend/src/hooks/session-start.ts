@@ -22,7 +22,16 @@ export async function sessionStartHook(
 ): Promise<HookJSONOutput> {
   const { source, session_id } = input;
 
-  logfire.info('SessionStart hook fired', { source, session_id });
+  // Log everything we get from the SDK for debugging
+  logfire.info('SessionStart hook fired', {
+    source,
+    session_id,
+    hook_event_name: input.hook_event_name,
+    transcript_path: input.transcript_path,
+    cwd: input.cwd,
+    permission_mode: input.permission_mode,
+    full_input: JSON.stringify(input),
+  });
   console.log(`[Duckpond] SessionStart hook fired: source=${source}, session_id=${session_id}`);
 
   // Build context based on how the session started
