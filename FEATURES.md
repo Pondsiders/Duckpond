@@ -12,19 +12,30 @@ The beat-up car with the spotless engine. The workshop where the tools are hung 
 
 ---
 
+## Need (what keeps us from living here)
+
+These are the features that would make Duckpond *home* instead of just "working."
+
+- [x] **Context visibility** — show token count, let Jeffery see how much runway we have. Flying blind sucks. *(Done: green/yellow/red percentage meter in header, updates after each response, 77.5% compact threshold)*
+- [ ] **Image input** — can't look at screenshots, diagrams, Sparkle pics. Essential.
+- [ ] **Conversation length management** — compaction, summarization, context window awareness. The unsexy infrastructure that makes long conversations possible.
+- [x] **Disable nanny prompts** — TodoWrite reminders, etc. SDK options should let us kill these. *(Done: Eavesdrop filter strips them out)*
+
+## Want (what makes this *better* than Claude Code)
+
+These are the features that would make us *prefer* Duckpond.
+
+- [ ] **User-invokable subagents** — `/librarian "question"` that Jeffery can call directly, response lands in shared context so we can discuss it together instead of telephone game through me
+- [ ] **Custom slash commands** — extensible, ours, not just what the SDK ships
+- [ ] **Subagents for Alpha** — Librarian, Researcher, etc. available as tools (may already work? needs testing)
+- [ ] **Skills** — specialized capabilities, domain knowledge
+
 ## Polish (small but visible)
 
-- [ ] Tool indicators stuck spinning — never transition from running (spinner) to finished (✓)
-- [ ] Conversation index shows first *letter* of first message, not the full message
+- [x] Tool indicators stuck spinning — never transition from running (spinner) to finished (✓)
+- [x] Conversation index shows first *letter* of first message, not the full message
 - [ ] Hook output invisible — want to see UserPromptSubmit output, etc.
 - [ ] Orientation context on start/resume — MINIMUM: current date/time (ISO-8601), also machine name and specs
-
-## Architecture (big lifts)
-
-- [ ] Image input
-- [ ] Conversation length management — compaction, summarization, context window awareness
-- [ ] Skills
-- [ ] Subagents
 
 ## Integration (connecting pieces)
 
@@ -33,4 +44,4 @@ The beat-up car with the spotless engine. The workshop where the tools are hung 
 
 ---
 
-*Last updated: January 5, 2026*
+*Last updated: January 5, 2026, 3:45 PM*

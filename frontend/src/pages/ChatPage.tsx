@@ -1,37 +1,75 @@
-import { useState, useEffect, useRef } from "react";
+/**
+ * ChatPage — The main conversation view.
+ *
+ * Built on assistant-ui primitives following the official Claude example.
+ * Backend streams state via assistant-stream; we just render it.
+ */
+
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, Square } from "lucide-react";
+import { ContextMeter } from "../components/ContextMeter";
 import {
   useAssistantTransportRuntime,
   AssistantRuntimeProvider,
   ThreadPrimitive,
   ComposerPrimitive,
-  useMessage,
-  useThread,
+  MessagePrimitive,
+  AssistantIf,
+} from "@assistant-ui/react";
+import type {
+  AssistantTransportConnectionMetadata,
+  ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
 import { MarkdownText } from "../components/MarkdownText";
-import { ToolFallback } from "../components/ToolFallback";
 import { colors, fontScale } from "../theme";
-import type { AssistantTransportConnectionMetadata } from "@assistant-ui/react";
 
-// Content can be a string or an array of parts
-type ContentPart =
-  | { type: "text"; text: string }
-  | { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, unknown>; argsText: string; result?: unknown; isError?: boolean };
+// -----------------------------------------------------------------------------
+// Types
+// -----------------------------------------------------------------------------
 
-type MessageContent = string | ContentPart[];
+// JSON value types (matching assistant-ui's expectations)
+type JSONValue = string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
+type JSONObject = { [key: string]: JSONValue };
 
-// State shape matches what backend streams
-type AgentState = {
-  messages: Array<{ role: string; content: MessageContent; uuid?: string; timestamp?: string }>;
-  sessionId: string | null;
+// Backend content part format (what the agent sends)
+type BackendTextPart = { type: "text"; text: string };
+type BackendToolCallPart = {
+  type: "tool-call";
+  toolCallId: string;
+  toolName: string;
+  args: JSONObject;
+  argsText: string;
+  result?: JSONValue;
+  isError?: boolean;
+};
+type BackendContentPart = BackendTextPart | BackendToolCallPart;
+type BackendMessageContent = string | BackendContentPart[];
+
+type ContextUsage = {
+  input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 };
 
+type AgentState = {
+  messages: Array<{
+    role: string;
+    content: BackendMessageContent;
+    uuid?: string;
+    timestamp?: string;
+  }>;
+  sessionId: string | null;
+  contextUsage?: ContextUsage | null;
+};
+
+// -----------------------------------------------------------------------------
+// Converter: Agent state → assistant-ui format
+// -----------------------------------------------------------------------------
+
 // Helper to normalize content to array of parts
-function normalizeContent(content: MessageContent): ContentPart[] {
-  if (!content) {
-    return [];
-  }
+function normalizeContent(content: BackendMessageContent): BackendContentPart[] {
+  if (!content) return [];
   if (typeof content === "string") {
     return [{ type: "text", text: content }];
   }
@@ -43,75 +81,262 @@ function normalizeContent(content: MessageContent): ContentPart[] {
 }
 
 // Converter: transform our state -> assistant-ui format
-const converter = (
-  state: AgentState,
-  meta: AssistantTransportConnectionMetadata
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): any => {
+// Uses padded index-based IDs (msg-000000) to ensure correct sort order.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const converter = (state: AgentState, meta: AssistantTransportConnectionMetadata): any => {
   // Defensive: filter out malformed messages
   const validMessages = (state.messages || []).filter((m) => m && m.role);
 
   return {
-  messages: validMessages.map((m, i) => {
-    const id = `msg-${String(i).padStart(6, "0")}`;
-    const baseMetadata = {
-      unstable_state: null,
-      unstable_annotations: [],
-      unstable_data: [],
-      steps: [],
-      custom: {},
-    };
-    const contentParts = normalizeContent(m.content);
-    if (m.role === "user") {
-      return {
-        id,
-        createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
-        role: "user" as const,
-        content: contentParts,
-        attachments: [],
-        metadata: baseMetadata,
+    messages: validMessages.map((m, i) => {
+      // Padded index ensures correct sort order in assistant-ui
+      const id = `msg-${String(i).padStart(6, "0")}`;
+      const baseMetadata = {
+        unstable_state: null,
+        unstable_annotations: [],
+        unstable_data: [],
+        steps: [],
+        custom: {},
       };
-    } else {
-      return {
-        id,
-        createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
-        role: "assistant" as const,
-        content: contentParts,
-        status:
-          meta.isSending && i === validMessages.length - 1
-            ? { type: "running" as const }
-            : { type: "complete" as const, reason: "stop" as const },
-        metadata: baseMetadata,
-      };
-    }
-  }),
-  isRunning: meta.isSending,
-};
+      const contentParts = normalizeContent(m.content);
+
+      if (m.role === "user") {
+        return {
+          id,
+          createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
+          role: "user" as const,
+          content: contentParts,
+          attachments: [],
+          metadata: baseMetadata,
+        };
+      } else {
+        return {
+          id,
+          createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
+          role: "assistant" as const,
+          content: contentParts,
+          status:
+            meta.isSending && i === validMessages.length - 1
+              ? { type: "running" as const }
+              : { type: "complete" as const, reason: "stop" as const },
+          metadata: baseMetadata,
+        };
+      }
+    }),
+    isRunning: meta.isSending,
+  };
 };
 
-// Helper to extract content parts from message
-function useMessageParts() {
-  const { content } = useMessage();
-  if (Array.isArray(content)) {
-    return content;
+// -----------------------------------------------------------------------------
+// Tool Fallback Component (matches assistant-ui interface)
+// -----------------------------------------------------------------------------
+
+const ToolFallback: ToolCallMessagePartComponent = ({
+  toolName,
+  argsText,
+  result,
+  status,
+}) => {
+  const [expanded, setExpanded] = useState(false);
+
+  const safeName = toolName || "Unknown Tool";
+  const displayName = safeName.charAt(0).toUpperCase() + safeName.slice(1);
+
+  const isRunning = status?.type === "running";
+  const isError =
+    status?.type === "incomplete" && status.reason === "error";
+
+  // Parse args for summary
+  let args: Record<string, unknown> = {};
+  try {
+    args = argsText ? JSON.parse(argsText) : {};
+  } catch {
+    // argsText might not be valid JSON
   }
-  return [{ type: "text" as const, text: String(content) }];
-}
 
-// Helper to extract just text from message content
-function useMessageText() {
-  const parts = useMessageParts();
-  return parts
-    .filter((part): part is { type: "text"; text: string } => part.type === "text")
-    .map((part) => part.text)
-    .join("\n");
-}
+  // Get a summary of the args
+  const argSummary = (() => {
+    const entries = Object.entries(args);
+    if (entries.length === 0) return "";
 
-// Claude-styled user message
-function UserMessage() {
-  const text = useMessageText();
+    if (safeName.toLowerCase() === "bash" && args.command) {
+      const cmd = String(args.command);
+      return cmd.length > 50 ? cmd.slice(0, 50) + "..." : cmd;
+    }
+    if (args.file_path) {
+      const path = String(args.file_path);
+      const parts = path.split("/");
+      return parts[parts.length - 1];
+    }
+    if (args.pattern) {
+      return String(args.pattern);
+    }
+
+    const firstString = entries.find(([, v]) => typeof v === "string");
+    if (firstString) {
+      const val = String(firstString[1]);
+      return val.length > 40 ? val.slice(0, 40) + "..." : val;
+    }
+
+    return `${entries.length} args`;
+  })();
+
   return (
     <div
+      style={{
+        marginBottom: "12px",
+        borderRadius: "8px",
+        border: `1px solid ${colors.border}`,
+        background: colors.surface,
+        overflow: "hidden",
+      }}
+    >
+      {/* Header */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          padding: "10px 12px",
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          color: colors.text,
+          fontFamily: "monospace",
+          fontSize: "13px",
+          textAlign: "left",
+        }}
+      >
+        {/* Status indicator */}
+        <span
+          style={{
+            width: "8px",
+            height: "8px",
+            borderRadius: "50%",
+            background: isRunning
+              ? colors.primary
+              : isError
+              ? "#ef4444"
+              : "#4ade80",
+            animation: isRunning ? "pulse 1.5s ease-in-out infinite" : "none",
+          }}
+        />
+
+        {/* Tool name */}
+        <span style={{ color: colors.primary, fontWeight: 600 }}>
+          {displayName}
+        </span>
+
+        {/* Arg summary */}
+        {argSummary && (
+          <span
+            style={{
+              color: colors.muted,
+              flex: 1,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {argSummary}
+          </span>
+        )}
+
+        {/* Expand indicator */}
+        <span style={{ color: colors.muted, fontSize: "10px" }}>
+          {expanded ? "▼" : "▶"}
+        </span>
+      </button>
+
+      {/* Expanded content */}
+      {expanded && (
+        <div
+          style={{
+            borderTop: `1px solid ${colors.border}`,
+            padding: "12px",
+          }}
+        >
+          <div style={{ marginBottom: result !== undefined ? "12px" : 0 }}>
+            <div
+              style={{
+                color: colors.muted,
+                fontSize: "11px",
+                marginBottom: "4px",
+                fontFamily: "monospace",
+              }}
+            >
+              INPUT
+            </div>
+            <pre
+              style={{
+                margin: 0,
+                padding: "8px",
+                background: colors.codeBg,
+                borderRadius: "4px",
+                fontSize: "12px",
+                fontFamily: "monospace",
+                color: colors.text,
+                overflow: "auto",
+                maxHeight: "200px",
+              }}
+            >
+              {argsText || "{}"}
+            </pre>
+          </div>
+
+          {result !== undefined && (
+            <div>
+              <div
+                style={{
+                  color: colors.muted,
+                  fontSize: "11px",
+                  marginBottom: "4px",
+                  fontFamily: "monospace",
+                }}
+              >
+                OUTPUT
+              </div>
+              <pre
+                style={{
+                  margin: 0,
+                  padding: "8px",
+                  background: colors.codeBg,
+                  borderRadius: "4px",
+                  fontSize: "12px",
+                  fontFamily: "monospace",
+                  color: colors.text,
+                  overflow: "auto",
+                  maxHeight: "300px",
+                }}
+              >
+                {typeof result === "string"
+                  ? result
+                  : JSON.stringify(result, null, 2)}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 0.4; transform: scale(0.8); }
+          50% { opacity: 1; transform: scale(1); }
+        }
+      `}</style>
+    </div>
+  );
+};
+
+// -----------------------------------------------------------------------------
+// Message Components (using MessagePrimitive)
+// -----------------------------------------------------------------------------
+
+const UserMessage = () => {
+  return (
+    <MessagePrimitive.Root
       style={{
         display: "flex",
         justifyContent: "flex-end",
@@ -129,167 +354,73 @@ function UserMessage() {
           fontSize: `${16 * fontScale}px`,
         }}
       >
-        <MarkdownText text={text} fontScale={fontScale} />
+        <MessagePrimitive.Parts />
       </div>
-    </div>
+    </MessagePrimitive.Root>
   );
-}
+};
 
-// Type guard for tool-call parts
-interface ToolCallPart {
-  type: "tool-call";
-  toolName: string;
-  toolCallId: string;
-  args: Record<string, unknown>;
-  argsText?: string;
-  result?: unknown;
-  isError?: boolean;
-}
-
-function isToolCallPart(part: unknown): part is ToolCallPart {
+const AssistantMessage = () => {
   return (
-    typeof part === "object" &&
-    part !== null &&
-    (part as ToolCallPart).type === "tool-call"
-  );
-}
-
-// Claude-styled assistant message
-function AssistantMessage() {
-  const parts = useMessageParts();
-
-  return (
-    <div
+    <MessagePrimitive.Root
       style={{
         marginBottom: "24px",
         paddingLeft: "8px",
         paddingRight: "48px",
       }}
     >
-      {parts.map((part, index) => {
-        // Text content
-        if (part.type === "text") {
-          return (
-            <div
-              key={index}
-              style={{
-                color: colors.text,
-                fontFamily: "Georgia, serif",
-                fontSize: `${16 * fontScale}px`,
-                lineHeight: "1.65",
-              }}
-            >
-              <MarkdownText text={part.text} fontScale={fontScale} />
-            </div>
-          );
-        }
-
-        // Tool call
-        if (isToolCallPart(part)) {
-          return (
-            <ToolFallback
-              key={part.toolCallId || index}
-              toolName={part.toolName}
-              args={part.args}
-              result={part.result}
-              isError={part.isError}
-            />
-          );
-        }
-
-        // Unknown part type - skip
-        return null;
-      })}
-    </div>
-  );
-}
-
-// Thinking indicator - shows when Alpha is processing
-function ThinkingIndicator() {
-  const isRunning = useThread((state) => state.isRunning);
-
-  if (!isRunning) return null;
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "8px",
-        padding: "12px 8px",
-        color: colors.muted,
-        fontFamily: "Georgia, serif",
-        fontSize: `${14 * fontScale}px`,
-        fontStyle: "italic",
-      }}
-    >
-      <span
+      <div
         style={{
-          display: "inline-block",
-          width: "8px",
-          height: "8px",
-          background: colors.primary,
-          borderRadius: "50%",
-          animation: "pulse 1.5s ease-in-out infinite",
+          color: colors.text,
+          fontFamily: "Georgia, serif",
+          fontSize: `${16 * fontScale}px`,
+          lineHeight: "1.65",
         }}
-      />
-      Alpha is thinking...
-      <style>
-        {`
-          @keyframes pulse {
-            0%, 100% { opacity: 0.4; transform: scale(0.8); }
-            50% { opacity: 1; transform: scale(1); }
-          }
-        `}
-      </style>
-    </div>
+      >
+        <MessagePrimitive.Parts
+          components={{
+            Text: MarkdownText,
+            tools: {
+              Fallback: ToolFallback,
+            },
+          }}
+        />
+      </div>
+    </MessagePrimitive.Root>
   );
-}
+};
 
-// Scroll handler component - must be inside AssistantRuntimeProvider
-function AutoScrollHandler({ scrollRef }: { scrollRef: React.RefObject<HTMLElement | null> }) {
-  const isRunning = useThread((state) => state.isRunning);
-  const messages = useThread((state) => state.messages);
-
-  // Scroll when isRunning changes OR when messages change
-  // But only if user is already near the bottom (not reading above)
-  useEffect(() => {
-    if (scrollRef.current) {
-      const el = scrollRef.current;
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      const isNearBottom = distanceFromBottom < 150; // within 150px of bottom
-
-      if (isNearBottom) {
-        requestAnimationFrame(() => {
-          if (scrollRef.current) {
-            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-          }
-        });
-      }
-    }
-  }, [isRunning, messages.length, scrollRef]);
-
-  return null;
-}
+// -----------------------------------------------------------------------------
+// Thread View
+// -----------------------------------------------------------------------------
 
 function ThreadView({ initialState }: { initialState: AgentState }) {
+  // Track context usage from state updates
+  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(
+    initialState.contextUsage ?? null
+  );
+  const contextUsageRef = useRef(contextUsage);
+
+  // Converter that also captures contextUsage updates
+  const converterWithUsage = useCallback(
+    (state: AgentState, meta: AssistantTransportConnectionMetadata) => {
+      // Capture contextUsage when state updates
+      if (state.contextUsage && state.contextUsage !== contextUsageRef.current) {
+        contextUsageRef.current = state.contextUsage;
+        // Schedule state update outside render
+        setTimeout(() => setContextUsage(state.contextUsage ?? null), 0);
+      }
+      return converter(state, meta);
+    },
+    []
+  );
+
   const runtime = useAssistantTransportRuntime({
     api: "/api/chat",
     headers: {},
     initialState,
-    converter,
+    converter: converterWithUsage,
   });
-
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const mainRef = useRef<HTMLElement>(null);
-
-  // Scroll to bottom on initial load (small delay to let messages render)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
-    }, 100);
-    return () => clearTimeout(timer);
-  }, []);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -325,37 +456,87 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
           >
             Duckpond
           </Link>
-          {initialState.sessionId && (
-            <span
-              style={{
-                fontFamily: "monospace",
-                fontSize: "12px",
-                color: colors.muted,
-              }}
-            >
-              {initialState.sessionId.slice(0, 8)}...
-            </span>
-          )}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "16px",
+            }}
+          >
+            {initialState.sessionId && (
+              <span
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: "12px",
+                  color: colors.muted,
+                }}
+              >
+                {initialState.sessionId.slice(0, 8)}...
+              </span>
+            )}
+            <ContextMeter usage={contextUsage} />
+          </div>
         </header>
 
-        {/* Messages */}
-        <main ref={mainRef} style={{ flex: 1, overflow: "auto", padding: "24px" }}>
-          <AutoScrollHandler scrollRef={mainRef} />
-          <div style={{ maxWidth: "768px", margin: "0 auto" }}>
-            <ThreadPrimitive.Root>
-              <ThreadPrimitive.Viewport>
-                <ThreadPrimitive.Messages
-                  components={{
-                    UserMessage,
-                    AssistantMessage,
+        {/* Thread */}
+        <ThreadPrimitive.Root
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          <ThreadPrimitive.Viewport
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              overflowY: "scroll",
+              padding: "24px",
+            }}
+          >
+            <div style={{ maxWidth: "768px", margin: "0 auto", width: "100%" }}>
+              <ThreadPrimitive.Messages
+                components={{
+                  UserMessage,
+                  AssistantMessage,
+                }}
+              />
+
+              {/* Thinking indicator — only shows when running */}
+              <AssistantIf condition={({ thread }) => thread.isRunning}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    padding: "12px 8px",
+                    color: colors.muted,
+                    fontFamily: "Georgia, serif",
+                    fontSize: `${14 * fontScale}px`,
+                    fontStyle: "italic",
                   }}
-                />
-                <ThinkingIndicator />
-                <div ref={messagesEndRef} />
-              </ThreadPrimitive.Viewport>
-            </ThreadPrimitive.Root>
-          </div>
-        </main>
+                >
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: "8px",
+                      height: "8px",
+                      background: colors.primary,
+                      borderRadius: "50%",
+                      animation: "pulse 1.5s ease-in-out infinite",
+                    }}
+                  />
+                  Alpha is thinking...
+                </div>
+              </AssistantIf>
+            </div>
+
+            {/* Bottom spacer */}
+            <div aria-hidden="true" style={{ height: "16px" }} />
+          </ThreadPrimitive.Viewport>
+        </ThreadPrimitive.Root>
 
         {/* Composer */}
         <footer
@@ -373,7 +554,8 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
                 padding: "16px",
                 background: colors.composer,
                 borderRadius: "16px",
-                boxShadow: "0 0.25rem 1.25rem rgba(0,0,0,0.4), 0 0 0 0.5px rgba(108,106,96,0.15)",
+                boxShadow:
+                  "0 0.25rem 1.25rem rgba(0,0,0,0.4), 0 0 0 0.5px rgba(108,106,96,0.15)",
               }}
             >
               <ComposerPrimitive.Input
@@ -407,22 +589,46 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
                 >
                   Opus 4.5
                 </span>
-                <ComposerPrimitive.Send
-                  style={{
-                    width: "36px",
-                    height: "36px",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    background: colors.primary,
-                    border: "none",
-                    borderRadius: "8px",
-                    color: "white",
-                    cursor: "pointer",
-                  }}
-                >
-                  <ArrowUp size={20} strokeWidth={2.5} />
-                </ComposerPrimitive.Send>
+
+                {/* Send button (shown when not running) */}
+                <AssistantIf condition={({ thread }) => !thread.isRunning}>
+                  <ComposerPrimitive.Send
+                    style={{
+                      width: "36px",
+                      height: "36px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: colors.primary,
+                      border: "none",
+                      borderRadius: "8px",
+                      color: "white",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <ArrowUp size={20} strokeWidth={2.5} />
+                  </ComposerPrimitive.Send>
+                </AssistantIf>
+
+                {/* Cancel button (shown when running) */}
+                <AssistantIf condition={({ thread }) => thread.isRunning}>
+                  <ComposerPrimitive.Cancel
+                    style={{
+                      width: "36px",
+                      height: "36px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: colors.primary,
+                      border: "none",
+                      borderRadius: "8px",
+                      color: "white",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <Square size={16} fill="white" />
+                  </ComposerPrimitive.Cancel>
+                </AssistantIf>
               </div>
             </ComposerPrimitive.Root>
             <p
@@ -441,6 +647,10 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
     </AssistantRuntimeProvider>
   );
 }
+
+// -----------------------------------------------------------------------------
+// ChatPage (route handler)
+// -----------------------------------------------------------------------------
 
 export default function ChatPage() {
   const { sessionId } = useParams();
@@ -503,7 +713,9 @@ export default function ChatPage() {
           gap: "16px",
         }}
       >
-        <div style={{ color: colors.primary, fontFamily: "Georgia, serif" }}>{error}</div>
+        <div style={{ color: colors.primary, fontFamily: "Georgia, serif" }}>
+          {error}
+        </div>
         <button
           onClick={() => navigate("/")}
           style={{

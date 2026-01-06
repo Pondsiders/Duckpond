@@ -207,5 +207,10 @@ async def chat(request: ChatRequest):
                 elif isinstance(message, ResultMessage):
                     controller.state["sessionId"] = message.session_id
 
+                    # Add usage data for context meter
+                    if message.usage:
+                        print(f"[Duckpond] Usage data: {message.usage}")
+                        controller.state["contextUsage"] = message.usage
+
     stream = create_run(run_callback, state=request.state)
     return DataStreamResponse(stream)
