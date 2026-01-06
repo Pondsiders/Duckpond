@@ -5,7 +5,7 @@
  */
 
 import { readFileSync } from 'fs';
-import { homedir } from 'os';
+import { homedir, hostname } from 'os';
 import { join } from 'path';
 
 // --- Paths ---
@@ -43,7 +43,7 @@ export const ALLOWED_TOOLS = [
 
 // --- System Prompt ---
 
-export function loadSystemPrompt(): string {
+function loadSoulPrompt(): string {
   const raw = readFileSync(SYSTEM_PROMPT_PATH, 'utf-8');
 
   // Strip YAML frontmatter (between --- markers)
@@ -55,6 +55,41 @@ export function loadSystemPrompt(): string {
   }
 
   return raw;
+}
+
+// Cache the soul prompt (static, doesn't change)
+const SOUL_PROMPT = loadSoulPrompt();
+
+/**
+ * Build a fresh system prompt for a new sitting.
+ * Includes the soul prompt plus dynamic context.
+ *
+ * Note: We deliberately exclude time to avoid cache invalidation.
+ * The timestamp hook handles per-message timing.
+ *
+ * @param hud - Optional HUD markdown from Redis (fetched by caller)
+ */
+export function buildSystemPrompt(hud?: string): string {
+  let sittingContext = `
+---
+
+## Sitting Context
+
+**Machine:** ${hostname()}
+**Via:** Duckpond
+`;
+
+  if (hud) {
+    sittingContext += `
+---
+
+## HUD
+
+${hud}
+`;
+  }
+
+  return SOUL_PROMPT + sittingContext;
 }
 
 // --- Environment Setup ---

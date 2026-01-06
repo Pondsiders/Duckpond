@@ -23,6 +23,7 @@ export function getRedis(): Redis {
 export const REDIS_KEYS = {
   context: (sessionId: string) => `duckpond:context:${sessionId}`,
   squoze: (sessionId: string) => `duckpond:squoze:${sessionId}`,
+  hud: 'alpha:hud',  // Populated by Pulse, read by Duckpond
 } as const;
 
 // TTL values

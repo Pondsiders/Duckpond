@@ -11,16 +11,12 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import { createAssistantStreamResponse } from 'assistant-stream';
 
-import { CWD, ALLOWED_TOOLS, loadSystemPrompt } from '../config.js';
-import { sessionStartHook } from '../hooks/session-start.js';
+import { CWD, ALLOWED_TOOLS, buildSystemPrompt } from '../config.js';
 import { injectSessionTag } from '../hooks/context-tag.js';
 import { subvoxPromptHook, subvoxStopHook } from '../hooks/subvox.js';
 import { getRedis, REDIS_KEYS, REDIS_TTL } from '../redis.js';
 
 export const chatRouter = Router();
-
-// Load system prompt once at module import
-const SYSTEM_PROMPT = loadSystemPrompt();
 
 interface ContentPart {
   type: string;
@@ -162,18 +158,32 @@ chatRouter.post('/api/chat', async (req: Request, res: Response) => {
     sendStateUpdate();
 
     try {
-      // Create the query with all our hooks
+      // Fetch HUD from Redis (populated by Pulse hourly)
+      let hud: string | undefined;
+      try {
+        const hudData = await getRedis().get(REDIS_KEYS.hud);
+        if (hudData) {
+          hud = hudData;
+          logfire.debug('HUD loaded from Redis', { size: hud.length });
+        }
+      } catch (err) {
+        logfire.warning('Failed to fetch HUD from Redis', { error: String(err) });
+      }
+
+      // Build fresh system prompt for this sitting
+      const systemPrompt = buildSystemPrompt(hud);
+
+      // Create the query
       const queryIterator = query({
         prompt: promptText,
         options: {
-          systemPrompt: SYSTEM_PROMPT,
+          systemPrompt,
           resume: sessionId,
           tools: ALLOWED_TOOLS,
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
           cwd: CWD,
           hooks: {
-            SessionStart: [{ hooks: [sessionStartHook as HookCallback] }],
             UserPromptSubmit: [{ hooks: [injectSessionTag as HookCallback, subvoxPromptHook as HookCallback] }],
             Stop: [{ hooks: [subvoxStopHook as HookCallback] }],
           },
