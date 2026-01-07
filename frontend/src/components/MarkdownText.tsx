@@ -1,15 +1,6 @@
 import Markdown from "react-markdown";
 import type { FC } from "react";
 
-// Claude dark palette
-const colors = {
-  text: "#eee",
-  muted: "#9a9893",
-  primary: "#ae5630",
-  codeBg: "#1a1a18",
-  inlineCodeBg: "#393937",
-};
-
 interface MarkdownTextProps {
   text: string;
   fontScale?: number;
@@ -20,35 +11,24 @@ export const MarkdownText: FC<MarkdownTextProps> = ({ text, fontScale = 1.25 }) 
     <Markdown
       components={{
         p: ({ children }) => (
-          <p style={{ marginBottom: "1em" }}>{children}</p>
+          <p className="mb-4">{children}</p>
         ),
         ul: ({ children }) => (
-          <ul style={{ marginBottom: "1em", paddingLeft: "1.5em", listStyleType: "disc" }}>
-            {children}
-          </ul>
+          <ul className="mb-4 pl-6 list-disc">{children}</ul>
         ),
         ol: ({ children }) => (
-          <ol style={{ marginBottom: "1em", paddingLeft: "1.5em", listStyleType: "decimal" }}>
-            {children}
-          </ol>
+          <ol className="mb-4 pl-6 list-decimal">{children}</ol>
         ),
         li: ({ children }) => (
-          <li style={{ marginBottom: "0.25em" }}>{children}</li>
+          <li className="mb-1">{children}</li>
         ),
         code: ({ children, className }) => {
           const isBlock = className?.includes("language-");
           if (isBlock) {
             return (
               <pre
-                style={{
-                  marginBottom: "1em",
-                  padding: "1em",
-                  background: colors.codeBg,
-                  borderRadius: "8px",
-                  overflowX: "auto",
-                  fontFamily: "monospace",
-                  fontSize: `${14 * fontScale}px`,
-                }}
+                className="mb-4 p-4 bg-code-bg rounded-lg overflow-x-auto font-mono"
+                style={{ fontSize: `${14 * fontScale}px` }}
               >
                 <code>{children}</code>
               </pre>
@@ -56,13 +36,8 @@ export const MarkdownText: FC<MarkdownTextProps> = ({ text, fontScale = 1.25 }) 
           }
           return (
             <code
-              style={{
-                padding: "0.15em 0.4em",
-                background: colors.inlineCodeBg,
-                borderRadius: "4px",
-                fontFamily: "monospace",
-                fontSize: `${14 * fontScale}px`,
-              }}
+              className="px-1.5 py-0.5 bg-user-bubble rounded font-mono"
+              style={{ fontSize: `${14 * fontScale}px` }}
             >
               {children}
             </code>
@@ -70,49 +45,44 @@ export const MarkdownText: FC<MarkdownTextProps> = ({ text, fontScale = 1.25 }) 
         },
         pre: ({ children }) => <>{children}</>,
         blockquote: ({ children }) => (
-          <blockquote
-            style={{
-              marginBottom: "1em",
-              paddingLeft: "1em",
-              borderLeft: `4px solid ${colors.primary}`,
-              fontStyle: "italic",
-              color: colors.muted,
-            }}
-          >
+          <blockquote className="mb-4 pl-4 border-l-4 border-primary italic text-muted">
             {children}
           </blockquote>
         ),
         h1: ({ children }) => (
-          <h1 style={{ marginBottom: "0.75em", fontSize: `${24 * fontScale}px`, fontWeight: "bold" }}>
+          <h1
+            className="mb-3 font-bold"
+            style={{ fontSize: `${24 * fontScale}px` }}
+          >
             {children}
           </h1>
         ),
         h2: ({ children }) => (
-          <h2 style={{ marginBottom: "0.5em", fontSize: `${20 * fontScale}px`, fontWeight: "bold" }}>
+          <h2
+            className="mb-2 font-bold"
+            style={{ fontSize: `${20 * fontScale}px` }}
+          >
             {children}
           </h2>
         ),
         h3: ({ children }) => (
-          <h3 style={{ marginBottom: "0.5em", fontSize: `${18 * fontScale}px`, fontWeight: "bold" }}>
+          <h3
+            className="mb-2 font-bold"
+            style={{ fontSize: `${18 * fontScale}px` }}
+          >
             {children}
           </h3>
         ),
         a: ({ href, children }) => (
-          <a
-            href={href}
-            style={{
-              color: colors.primary,
-              textDecoration: "underline",
-            }}
-          >
+          <a href={href} className="text-primary underline break-words">
             {children}
           </a>
         ),
         strong: ({ children }) => (
-          <strong style={{ fontWeight: "bold" }}>{children}</strong>
+          <strong className="font-bold">{children}</strong>
         ),
         em: ({ children }) => (
-          <em style={{ fontStyle: "italic" }}>{children}</em>
+          <em className="italic">{children}</em>
         ),
       }}
     >

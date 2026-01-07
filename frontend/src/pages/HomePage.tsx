@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { colors } from "../theme";
 
 type Session = {
   id: string;
@@ -54,91 +53,37 @@ export default function HomePage() {
   };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: colors.background,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        padding: "48px 24px",
-      }}
-    >
+    <div className="min-h-screen bg-background flex flex-col items-center px-6 py-12">
       {/* Header */}
-      <h1
-        style={{
-          fontSize: "48px",
-          fontFamily: "Georgia, serif",
-          fontWeight: 300,
-          color: colors.text,
-          marginBottom: "8px",
-        }}
-      >
+      <h1 className="text-5xl font-serif font-light text-text mb-2">
         Duckpond
       </h1>
-      <p
-        style={{
-          color: colors.muted,
-          marginBottom: "48px",
-          fontFamily: "Georgia, serif",
-        }}
-      >
+      <p className="text-muted mb-12 font-serif">
         The duck, the pond, and a cozy bench by the water
       </p>
 
       {/* New Conversation - prominent */}
       <button
         onClick={() => navigate("/chat")}
-        style={{
-          width: "100%",
-          maxWidth: "400px",
-          marginBottom: "32px",
-          padding: "16px 24px",
-          background: colors.primary,
-          border: "none",
-          borderRadius: "16px",
-          color: "white",
-          fontFamily: "Georgia, serif",
-          fontSize: "18px",
-          cursor: "pointer",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-        }}
+        className="w-full max-w-md mb-8 px-6 py-4 bg-primary border-none rounded-2xl text-white font-serif text-lg cursor-pointer shadow-lg"
       >
         New Conversation
       </button>
 
       {/* Resume Section */}
-      <div style={{ width: "100%", maxWidth: "400px", marginBottom: "32px" }}>
-        <div style={{ display: "flex", gap: "8px" }}>
+      <div className="w-full max-w-md mb-8">
+        <div className="flex gap-2">
           <input
             type="text"
             placeholder="Resume by session UUID..."
             value={resumeId}
             onChange={(e) => setResumeId(e.target.value)}
             onKeyDown={handleKeyDown}
-            style={{
-              flex: 1,
-              padding: "12px 16px",
-              background: colors.composer,
-              border: "1px solid rgba(108,106,96,0.2)",
-              borderRadius: "12px",
-              fontFamily: "monospace",
-              fontSize: "14px",
-              color: colors.text,
-              outline: "none",
-            }}
+            className="flex-1 px-4 py-3 bg-composer border border-border rounded-xl font-mono text-sm text-text outline-none"
           />
           <button
             onClick={handleResume}
-            style={{
-              padding: "12px 24px",
-              background: colors.composer,
-              border: "1px solid rgba(108,106,96,0.2)",
-              borderRadius: "12px",
-              color: colors.text,
-              fontFamily: "Georgia, serif",
-              cursor: "pointer",
-            }}
+            className="px-6 py-3 bg-composer border border-border rounded-xl text-text font-serif cursor-pointer"
           >
             Resume
           </button>
@@ -146,85 +91,35 @@ export default function HomePage() {
       </div>
 
       {/* Divider */}
-      <div
-        style={{
-          width: "100%",
-          maxWidth: "400px",
-          display: "flex",
-          alignItems: "center",
-          gap: "16px",
-          marginBottom: "32px",
-          color: colors.muted,
-        }}
-      >
-        <div style={{ flex: 1, height: "1px", background: "rgba(108,106,96,0.2)" }} />
-        <span style={{ fontSize: "14px" }}>recent sessions</span>
-        <div style={{ flex: 1, height: "1px", background: "rgba(108,106,96,0.2)" }} />
+      <div className="w-full max-w-md flex items-center gap-4 mb-8 text-muted">
+        <div className="flex-1 h-px bg-border" />
+        <span className="text-sm">recent sessions</span>
+        <div className="flex-1 h-px bg-border" />
       </div>
 
       {/* Recent Sessions */}
-      <div style={{ width: "100%", maxWidth: "400px" }}>
+      <div className="w-full max-w-md">
         {loading ? (
-          <div style={{ textAlign: "center", color: colors.muted }}>Loading...</div>
+          <div className="text-center text-muted">Loading...</div>
         ) : sessions.length === 0 ? (
-          <div
-            style={{
-              textAlign: "center",
-              color: colors.muted,
-              padding: "32px 0",
-              fontFamily: "Georgia, serif",
-            }}
-          >
+          <div className="text-center text-muted py-8 font-serif">
             No sessions yet. Start a new conversation above.
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          <div className="flex flex-col gap-2">
             {sessions.map((s) => (
               <button
                 key={s.id}
                 onClick={() => navigate(`/chat/${s.id}`)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "12px",
-                  padding: "16px",
-                  background: colors.composer,
-                  border: "1px solid rgba(108,106,96,0.2)",
-                  borderRadius: "12px",
-                  color: colors.text,
-                  textAlign: "left",
-                  cursor: "pointer",
-                  width: "100%",
-                }}
+                className="flex items-center gap-3 p-4 bg-composer border border-border rounded-xl text-text text-left cursor-pointer w-full"
               >
-                <span
-                  style={{
-                    fontFamily: "monospace",
-                    fontSize: "12px",
-                    color: colors.muted,
-                    flexShrink: 0,
-                  }}
-                >
+                <span className="font-mono text-xs text-muted shrink-0">
                   {s.id.slice(0, 8)}
                 </span>
-                <span
-                  style={{
-                    flex: 1,
-                    fontFamily: "Georgia, serif",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
+                <span className="flex-1 font-serif overflow-hidden text-ellipsis whitespace-nowrap">
                   {s.title}
                 </span>
-                <span
-                  style={{
-                    fontSize: "12px",
-                    color: colors.muted,
-                    flexShrink: 0,
-                  }}
-                >
+                <span className="text-xs text-muted shrink-0">
                   {formatRelative(s.updated_at)}
                 </span>
               </button>

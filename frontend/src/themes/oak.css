@@ -1,0 +1,31 @@
+/**
+ * Oak — The original Duckpond palette.
+ *
+ * Warm, dark, Claude-ish. Like the workshop at night.
+ */
+
+:root {
+  /* Core surfaces */
+  --theme-background: #2b2a27;
+  --theme-surface: #1f1e1b;
+  --theme-composer: #1f1e1b;
+
+  /* Text */
+  --theme-text: #eeeeee;
+  --theme-muted: #9a9893;
+
+  /* Accent */
+  --theme-primary: #ae5630;
+
+  /* Components */
+  --theme-user-bubble: #393937;
+  --theme-code-bg: #1a1a18;
+  --theme-border: rgba(108, 106, 96, 0.3);
+
+  /* Semantic */
+  --theme-success: #4ade80;
+  --theme-error: #ef4444;
+
+  /* Typography scale (125% = 1.25) */
+  --theme-font-scale: 1.25;
+}

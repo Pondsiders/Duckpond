@@ -12,7 +12,6 @@ import {
   useAttachment,
 } from "@assistant-ui/react";
 import { Paperclip, X, ImageIcon } from "lucide-react";
-import { colors } from "../theme";
 
 // -----------------------------------------------------------------------------
 // Composer attachment (with remove button)
@@ -40,58 +39,19 @@ const ComposerAttachment: FC = () => {
   }
 
   return (
-    <AttachmentPrimitive.Root
-      style={{
-        position: "relative",
-        width: "64px",
-        height: "64px",
-        borderRadius: "8px",
-        overflow: "hidden",
-        background: colors.surface,
-        border: `1px solid ${colors.border}`,
-      }}
-    >
+    <AttachmentPrimitive.Root className="relative w-16 h-16 rounded-lg overflow-hidden bg-surface border border-border">
       {imageUrl ? (
         <img
           src={imageUrl}
           alt={attachment.name}
-          style={{
-            width: "100%",
-            height: "100%",
-            objectFit: "cover",
-          }}
+          className="w-full h-full object-cover"
         />
       ) : (
-        <div
-          style={{
-            width: "100%",
-            height: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: colors.muted,
-          }}
-        >
+        <div className="w-full h-full flex items-center justify-center text-muted">
           <ImageIcon size={24} />
         </div>
       )}
-      <AttachmentPrimitive.Remove
-        style={{
-          position: "absolute",
-          top: "-6px",
-          right: "-6px",
-          width: "20px",
-          height: "20px",
-          borderRadius: "50%",
-          background: colors.primary,
-          border: "none",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          cursor: "pointer",
-          color: "white",
-        }}
-      >
+      <AttachmentPrimitive.Remove className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-primary border-none flex items-center justify-center cursor-pointer text-white">
         <X size={12} />
       </AttachmentPrimitive.Remove>
     </AttachmentPrimitive.Root>
@@ -117,18 +77,7 @@ export const ComposerAttachments: FC = () => {
 export const ComposerAddAttachment: FC = () => {
   return (
     <ComposerPrimitive.AddAttachment
-      style={{
-        width: "36px",
-        height: "36px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "transparent",
-        border: `1px solid ${colors.border}`,
-        borderRadius: "8px",
-        color: colors.muted,
-        cursor: "pointer",
-      }}
+      className="w-9 h-9 flex items-center justify-center bg-transparent border border-border rounded-lg text-muted cursor-pointer"
       title="Add image"
     >
       <Paperclip size={18} />
@@ -155,37 +104,15 @@ const MessageAttachment: FC = () => {
   }
 
   return (
-    <div
-      style={{
-        width: "120px",
-        height: "120px",
-        borderRadius: "8px",
-        overflow: "hidden",
-        background: colors.surface,
-        border: `1px solid ${colors.border}`,
-      }}
-    >
+    <div className="w-30 h-30 rounded-lg overflow-hidden bg-surface border border-border">
       {imageUrl ? (
         <img
           src={imageUrl}
           alt={attachment.name}
-          style={{
-            width: "100%",
-            height: "100%",
-            objectFit: "cover",
-          }}
+          className="w-full h-full object-cover"
         />
       ) : (
-        <div
-          style={{
-            width: "100%",
-            height: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: colors.muted,
-          }}
-        >
+        <div className="w-full h-full flex items-center justify-center text-muted">
           <ImageIcon size={32} />
         </div>
       )}
@@ -195,14 +122,7 @@ const MessageAttachment: FC = () => {
 
 export const UserMessageAttachments: FC = () => {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "8px",
-        marginBottom: "8px",
-      }}
-    >
+    <div className="flex flex-wrap gap-2 mb-2">
       <MessagePrimitive.Attachments
         components={{ Attachment: MessageAttachment }}
       />

@@ -10,8 +10,6 @@
  * stored in Redis, and fetched via /api/context/{session_id}.
  */
 
-import { colors } from "../theme";
-
 // Auto-compact triggers at approximately 77.5% usage
 const COMPACT_THRESHOLD_PERCENT = 77.5;
 const CONTEXT_WINDOW_SIZE = 200_000;
@@ -23,7 +21,7 @@ type ContextMeterProps = {
 export function ContextMeter({ inputTokens }: ContextMeterProps) {
   if (inputTokens == null) {
     return (
-      <span style={{ color: colors.muted, fontSize: "0.875rem" }}>
+      <span className="text-muted text-sm">
         —%
       </span>
     );
@@ -33,6 +31,7 @@ export function ContextMeter({ inputTokens }: ContextMeterProps) {
   const percentToCompact = COMPACT_THRESHOLD_PERCENT - percentUsed;
 
   // Determine color based on distance to compact threshold
+  // These are dynamic so we keep them as inline styles
   let color: string;
   let title: string;
 
@@ -52,12 +51,8 @@ export function ContextMeter({ inputTokens }: ContextMeterProps) {
 
   return (
     <span
-      style={{
-        color,
-        fontSize: "0.875rem",
-        fontWeight: 500,
-        fontVariantNumeric: "tabular-nums",
-      }}
+      className="text-sm font-medium tabular-nums"
+      style={{ color }}
       title={title}
     >
       {percentUsed.toFixed(1)}%

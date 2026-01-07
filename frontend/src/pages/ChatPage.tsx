@@ -28,7 +28,9 @@ import type {
   ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
 import { MarkdownText } from "../components/MarkdownText";
-import { colors, fontScale } from "../theme";
+
+// Font scale for 125% sizing
+const fontScale = 1.25;
 
 // -----------------------------------------------------------------------------
 // Types
@@ -197,136 +199,61 @@ const ToolFallback: ToolCallMessagePartComponent = ({
     return `${entries.length} args`;
   })();
 
+  // Status dot color (dynamic)
+  const statusColor = isRunning
+    ? "bg-primary"
+    : isError
+    ? "bg-error"
+    : "bg-success";
+
   return (
-    <div
-      style={{
-        marginBottom: "12px",
-        borderRadius: "8px",
-        border: `1px solid ${colors.border}`,
-        background: colors.surface,
-        overflow: "hidden",
-      }}
-    >
+    <div className="mb-3 rounded-lg border border-border bg-surface overflow-hidden">
       {/* Header */}
       <button
         onClick={() => setExpanded(!expanded)}
-        style={{
-          width: "100%",
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          padding: "10px 12px",
-          background: "transparent",
-          border: "none",
-          cursor: "pointer",
-          color: colors.text,
-          fontFamily: "monospace",
-          fontSize: "13px",
-          textAlign: "left",
-        }}
+        className="w-full flex items-center gap-2 px-3 py-2.5 bg-transparent border-none cursor-pointer text-text font-mono text-[13px] text-left"
       >
         {/* Status indicator */}
         <span
-          style={{
-            width: "8px",
-            height: "8px",
-            borderRadius: "50%",
-            background: isRunning
-              ? colors.primary
-              : isError
-              ? "#ef4444"
-              : "#4ade80",
-            animation: isRunning ? "pulse 1.5s ease-in-out infinite" : "none",
-          }}
+          className={`w-2 h-2 rounded-full ${statusColor} ${isRunning ? "animate-pulse-dot" : ""}`}
         />
 
         {/* Tool name */}
-        <span style={{ color: colors.primary, fontWeight: 600 }}>
+        <span className="text-primary font-semibold">
           {displayName}
         </span>
 
         {/* Arg summary */}
         {argSummary && (
-          <span
-            style={{
-              color: colors.muted,
-              flex: 1,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
+          <span className="text-muted flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
             {argSummary}
           </span>
         )}
 
         {/* Expand indicator */}
-        <span style={{ color: colors.muted, fontSize: "10px" }}>
+        <span className="text-muted text-[10px]">
           {expanded ? "▼" : "▶"}
         </span>
       </button>
 
       {/* Expanded content */}
       {expanded && (
-        <div
-          style={{
-            borderTop: `1px solid ${colors.border}`,
-            padding: "12px",
-          }}
-        >
-          <div style={{ marginBottom: result !== undefined ? "12px" : 0 }}>
-            <div
-              style={{
-                color: colors.muted,
-                fontSize: "11px",
-                marginBottom: "4px",
-                fontFamily: "monospace",
-              }}
-            >
+        <div className="border-t border-border p-3">
+          <div className={result !== undefined ? "mb-3" : ""}>
+            <div className="text-muted text-[11px] mb-1 font-mono">
               INPUT
             </div>
-            <pre
-              style={{
-                margin: 0,
-                padding: "8px",
-                background: colors.codeBg,
-                borderRadius: "4px",
-                fontSize: "12px",
-                fontFamily: "monospace",
-                color: colors.text,
-                overflow: "auto",
-                maxHeight: "200px",
-              }}
-            >
+            <pre className="m-0 p-2 bg-code-bg rounded text-xs font-mono text-text overflow-auto max-h-[200px]">
               {argsText || "{}"}
             </pre>
           </div>
 
           {result !== undefined && (
             <div>
-              <div
-                style={{
-                  color: colors.muted,
-                  fontSize: "11px",
-                  marginBottom: "4px",
-                  fontFamily: "monospace",
-                }}
-              >
+              <div className="text-muted text-[11px] mb-1 font-mono">
                 OUTPUT
               </div>
-              <pre
-                style={{
-                  margin: 0,
-                  padding: "8px",
-                  background: colors.codeBg,
-                  borderRadius: "4px",
-                  fontSize: "12px",
-                  fontFamily: "monospace",
-                  color: colors.text,
-                  overflow: "auto",
-                  maxHeight: "300px",
-                }}
-              >
+              <pre className="m-0 p-2 bg-code-bg rounded text-xs font-mono text-text overflow-auto max-h-[300px]">
                 {typeof result === "string"
                   ? result
                   : JSON.stringify(result, null, 2)}
@@ -335,13 +262,6 @@ const ToolFallback: ToolCallMessagePartComponent = ({
           )}
         </div>
       )}
-
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 0.4; transform: scale(0.8); }
-          50% { opacity: 1; transform: scale(1); }
-        }
-      `}</style>
     </div>
   );
 };
@@ -352,26 +272,12 @@ const ToolFallback: ToolCallMessagePartComponent = ({
 
 const UserMessage = () => {
   return (
-    <MessagePrimitive.Root
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "flex-end",
-        marginBottom: "16px",
-      }}
-    >
+    <MessagePrimitive.Root className="flex flex-col items-end mb-4">
       {/* Attachments shown above the bubble */}
       <UserMessageAttachments />
       <div
-        style={{
-          padding: "12px 16px",
-          background: colors.userBubble,
-          borderRadius: "16px",
-          maxWidth: "75%",
-          color: colors.text,
-          fontFamily: "Georgia, serif",
-          fontSize: `${16 * fontScale}px`,
-        }}
+        className="px-4 py-3 bg-user-bubble rounded-2xl max-w-[75%] text-text font-serif break-words"
+        style={{ fontSize: `${16 * fontScale}px` }}
       >
         <MessagePrimitive.Parts />
       </div>
@@ -381,20 +287,10 @@ const UserMessage = () => {
 
 const AssistantMessage = () => {
   return (
-    <MessagePrimitive.Root
-      style={{
-        marginBottom: "24px",
-        paddingLeft: "8px",
-        paddingRight: "48px",
-      }}
-    >
+    <MessagePrimitive.Root className="mb-6 pl-2 pr-12">
       <div
-        style={{
-          color: colors.text,
-          fontFamily: "Georgia, serif",
-          fontSize: `${16 * fontScale}px`,
-          lineHeight: "1.65",
-        }}
+        className="text-text font-serif leading-relaxed"
+        style={{ fontSize: `${16 * fontScale}px` }}
       >
         <MessagePrimitive.Parts
           components={{
@@ -471,53 +367,18 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <div
-        style={{
-          height: "100vh",
-          display: "flex",
-          flexDirection: "column",
-          background: colors.background,
-        }}
-      >
+      <div className="h-screen flex flex-col bg-background">
         {/* Header */}
-        <header
-          style={{
-            padding: "16px 24px",
-            borderBottom: "1px solid rgba(108,106,96,0.2)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            background: "rgba(43,42,39,0.8)",
-            backdropFilter: "blur(8px)",
-          }}
-        >
+        <header className="px-6 py-4 border-b border-border flex items-center justify-between bg-background/80 backdrop-blur-sm">
           <Link
             to="/"
-            style={{
-              color: colors.primary,
-              textDecoration: "none",
-              fontWeight: "bold",
-              fontSize: "18px",
-              fontFamily: "Georgia, serif",
-            }}
+            className="text-primary no-underline font-bold text-lg font-serif"
           >
             Duckpond
           </Link>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "16px",
-            }}
-          >
+          <div className="flex items-center gap-4">
             {sessionId && (
-              <span
-                style={{
-                  fontFamily: "monospace",
-                  fontSize: "12px",
-                  color: colors.muted,
-                }}
-              >
+              <span className="font-mono text-xs text-muted">
                 {sessionId.slice(0, 8)}...
               </span>
             )}
@@ -526,24 +387,9 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
         </header>
 
         {/* Thread */}
-        <ThreadPrimitive.Root
-          style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-          }}
-        >
-          <ThreadPrimitive.Viewport
-            style={{
-              flex: 1,
-              display: "flex",
-              flexDirection: "column",
-              overflowY: "scroll",
-              padding: "24px",
-            }}
-          >
-            <div style={{ maxWidth: "768px", margin: "0 auto", width: "100%" }}>
+        <ThreadPrimitive.Root className="flex-1 flex flex-col overflow-hidden">
+          <ThreadPrimitive.Viewport className="flex-1 flex flex-col overflow-y-scroll p-6">
+            <div className="max-w-3xl mx-auto w-full">
               <ThreadPrimitive.Messages
                 components={{
                   UserMessage,
@@ -554,143 +400,61 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
               {/* Thinking indicator — only shows when running */}
               <AssistantIf condition={({ thread }) => thread.isRunning}>
                 <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    padding: "12px 8px",
-                    color: colors.muted,
-                    fontFamily: "Georgia, serif",
-                    fontSize: `${14 * fontScale}px`,
-                    fontStyle: "italic",
-                  }}
+                  className="flex items-center gap-2 px-2 py-3 text-muted font-serif italic"
+                  style={{ fontSize: `${14 * fontScale}px` }}
                 >
-                  <span
-                    style={{
-                      display: "inline-block",
-                      width: "8px",
-                      height: "8px",
-                      background: colors.primary,
-                      borderRadius: "50%",
-                      animation: "pulse 1.5s ease-in-out infinite",
-                    }}
-                  />
+                  <span className="inline-block w-2 h-2 bg-primary rounded-full animate-pulse-dot" />
                   Alpha is thinking...
                 </div>
               </AssistantIf>
             </div>
 
             {/* Bottom spacer */}
-            <div aria-hidden="true" style={{ height: "16px" }} />
+            <div aria-hidden="true" className="h-4" />
           </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>
 
         {/* Composer */}
-        <footer
-          style={{
-            padding: "16px 24px",
-            background: colors.background,
-          }}
-        >
-          <div style={{ maxWidth: "768px", margin: "0 auto" }}>
-            <ComposerPrimitive.Root
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "12px",
-                padding: "16px",
-                background: colors.composer,
-                borderRadius: "16px",
-                boxShadow:
-                  "0 0.25rem 1.25rem rgba(0,0,0,0.4), 0 0 0 0.5px rgba(108,106,96,0.15)",
-              }}
-            >
+        <footer className="px-6 py-4 bg-background">
+          <div className="max-w-3xl mx-auto">
+            <ComposerPrimitive.Root className="flex flex-col gap-3 p-4 bg-composer rounded-2xl shadow-[0_0.25rem_1.25rem_rgba(0,0,0,0.4),0_0_0_0.5px_rgba(108,106,96,0.15)]">
               {/* Attachment previews */}
               <ComposerAttachments />
 
               <ComposerPrimitive.Input
                 placeholder="Talk to Alpha..."
-                style={{
-                  width: "100%",
-                  padding: "8px 0",
-                  background: "transparent",
-                  border: "none",
-                  color: colors.text,
-                  fontSize: `${16 * fontScale}px`,
-                  fontFamily: "Georgia, serif",
-                  outline: "none",
-                  resize: "none",
-                }}
+                className="w-full py-2 bg-transparent border-none text-text font-serif outline-none resize-none"
+                style={{ fontSize: `${16 * fontScale}px` }}
               />
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "flex-end",
-                  alignItems: "center",
-                  gap: "12px",
-                }}
-              >
+              <div className="flex justify-end items-center gap-3">
                 {/* Add attachment button */}
                 <ComposerAddAttachment />
 
                 <span
-                  style={{
-                    fontFamily: "Georgia, serif",
-                    fontSize: `${14 * fontScale}px`,
-                    color: colors.muted,
-                  }}
+                  className="font-serif text-muted"
+                  style={{ fontSize: `${14 * fontScale}px` }}
                 >
                   Opus 4.5
                 </span>
 
                 {/* Send button (shown when not running) */}
                 <AssistantIf condition={({ thread }) => !thread.isRunning}>
-                  <ComposerPrimitive.Send
-                    style={{
-                      width: "36px",
-                      height: "36px",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      background: colors.primary,
-                      border: "none",
-                      borderRadius: "8px",
-                      color: "white",
-                      cursor: "pointer",
-                    }}
-                  >
+                  <ComposerPrimitive.Send className="w-9 h-9 flex items-center justify-center bg-primary border-none rounded-lg text-white cursor-pointer">
                     <ArrowUp size={20} strokeWidth={2.5} />
                   </ComposerPrimitive.Send>
                 </AssistantIf>
 
                 {/* Cancel button (shown when running) */}
                 <AssistantIf condition={({ thread }) => thread.isRunning}>
-                  <ComposerPrimitive.Cancel
-                    style={{
-                      width: "36px",
-                      height: "36px",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      background: colors.primary,
-                      border: "none",
-                      borderRadius: "8px",
-                      color: "white",
-                      cursor: "pointer",
-                    }}
-                  >
+                  <ComposerPrimitive.Cancel className="w-9 h-9 flex items-center justify-center bg-primary border-none rounded-lg text-white cursor-pointer">
                     <Square size={16} fill="white" />
                   </ComposerPrimitive.Cancel>
                 </AssistantIf>
               </div>
             </ComposerPrimitive.Root>
             <p
-              style={{
-                textAlign: "right",
-                fontSize: `${11 * fontScale}px`,
-                color: colors.muted,
-                marginTop: "8px",
-              }}
+              className="text-right text-muted mt-2"
+              style={{ fontSize: `${11 * fontScale}px` }}
             >
               Alpha can make mistakes. Please double-check responses.
             </p>
@@ -737,17 +501,7 @@ export default function ChatPage() {
 
   if (loading) {
     return (
-      <div
-        style={{
-          height: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: colors.background,
-          color: colors.muted,
-          fontFamily: "Georgia, serif",
-        }}
-      >
+      <div className="h-screen flex items-center justify-center bg-background text-muted font-serif">
         Loading session...
       </div>
     );
@@ -755,31 +509,13 @@ export default function ChatPage() {
 
   if (error) {
     return (
-      <div
-        style={{
-          height: "100vh",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          background: colors.background,
-          gap: "16px",
-        }}
-      >
-        <div style={{ color: colors.primary, fontFamily: "Georgia, serif" }}>
+      <div className="h-screen flex flex-col items-center justify-center bg-background gap-4">
+        <div className="text-primary font-serif">
           {error}
         </div>
         <button
           onClick={() => navigate("/")}
-          style={{
-            padding: "12px 24px",
-            background: colors.composer,
-            border: "1px solid rgba(108,106,96,0.2)",
-            borderRadius: "8px",
-            color: colors.text,
-            cursor: "pointer",
-            fontFamily: "Georgia, serif",
-          }}
+          className="px-6 py-3 bg-composer border border-border rounded-lg text-text cursor-pointer font-serif"
         >
           Back to Home
         </button>
