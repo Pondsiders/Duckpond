@@ -11,7 +11,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { HookCallback, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createAssistantStreamResponse } from 'assistant-stream';
 
-import { CWD, ALLOWED_TOOLS, buildSystemPrompt } from '../config.js';
+import { CWD, ALLOWED_TOOLS, AGENTS, buildSystemPrompt } from '../config.js';
 import { injectSessionTag } from '../hooks/context-tag.js';
 import { subvoxPromptHook, subvoxStopHook } from '../hooks/subvox.js';
 import { getRedis, REDIS_KEYS, REDIS_TTL } from '../redis.js';
@@ -211,6 +211,7 @@ chatRouter.post('/api/chat', async (req: Request, res: Response) => {
           systemPrompt,
           resume: sessionId,
           tools: ALLOWED_TOOLS,
+          agents: AGENTS,
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
           cwd: CWD,

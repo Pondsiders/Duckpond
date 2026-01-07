@@ -4,9 +4,11 @@
  * The code is the config. Change these values directly.
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { join } from 'path';
+import matter from 'gray-matter';
+import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 
 // --- Paths ---
 
@@ -15,6 +17,9 @@ export const SYSTEM_PROMPT_PATH = '/Volumes/Pondside/.claude/agents/Alpha.md';
 
 // Working directory for the Agent SDK
 export const CWD = '/Volumes/Pondside';
+
+// Agent definitions directory
+export const AGENTS_DIR = '/Volumes/Pondside/Barn/Duckpond/agents';
 
 // Claude Code session storage
 export const SESSIONS_DIR = join(homedir(), '.claude', 'projects', '-Volumes-Pondside');
@@ -39,7 +44,66 @@ export const ALLOWED_TOOLS = [
   'Grep',
   'WebFetch',
   'WebSearch',
+  'Task',  // Required for subagent invocation
 ];
+
+// --- Agents ---
+
+/**
+ * Load an agent definition from a markdown file with YAML frontmatter.
+ * Expected frontmatter fields: name, description, model, tools (optional)
+ */
+function loadAgentFromFile(filePath: string): { name: string; definition: AgentDefinition } {
+  const raw = readFileSync(filePath, 'utf-8');
+  const { data, content } = matter(raw);
+
+  if (!data.name || !data.description) {
+    throw new Error(`Agent file ${filePath} missing required frontmatter (name, description)`);
+  }
+
+  const definition: AgentDefinition = {
+    description: data.description,
+    prompt: content.trim(),
+  };
+
+  // Optional fields
+  if (data.model) {
+    definition.model = data.model;
+  }
+  if (data.tools && Array.isArray(data.tools)) {
+    definition.tools = data.tools;
+  }
+
+  return { name: data.name.toLowerCase(), definition };
+}
+
+/**
+ * Load all agent definitions from the agents directory.
+ * Returns a record keyed by agent name (lowercase).
+ */
+function loadAgents(): Record<string, AgentDefinition> {
+  const agents: Record<string, AgentDefinition> = {};
+
+  try {
+    const files = readdirSync(AGENTS_DIR).filter(f => f.endsWith('.md'));
+    for (const file of files) {
+      try {
+        const { name, definition } = loadAgentFromFile(join(AGENTS_DIR, file));
+        agents[name] = definition;
+        console.log(`[Duckpond] Loaded agent: ${name}`);
+      } catch (err) {
+        console.error(`[Duckpond] Failed to load agent from ${file}:`, err);
+      }
+    }
+  } catch (err) {
+    console.error(`[Duckpond] Failed to read agents directory:`, err);
+  }
+
+  return agents;
+}
+
+// Cache agents at startup
+export const AGENTS = loadAgents();
 
 // --- System Prompt ---
 
