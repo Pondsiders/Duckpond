@@ -27,7 +27,7 @@ These are the features that would make us *prefer* Duckpond.
 
 - [ ] **User-invokable subagents** — `/librarian "question"` that Jeffery can call directly, response lands in shared context so we can discuss it together instead of telephone game through me
 - [ ] **Custom slash commands** — extensible, ours, not just what the SDK ships
-- [ ] **Subagents for Alpha** — Librarian, Researcher, etc. available as tools (may already work? needs testing)
+- [x] **Subagents for Alpha** — Librarian, Researcher, etc. available as tools (may already work? needs testing)
 - [ ] **Skills** — specialized capabilities, domain knowledge
 
 ## Polish (small but visible)

@@ -13,6 +13,7 @@ import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 // --- Paths ---
 
 // Alpha's system prompt
+// export const SYSTEM_PROMPT_PATH = '/Volumes/Pondside/Alpha-Home/self/system-prompt/system-prompt.md';
 export const SYSTEM_PROMPT_PATH = '/Volumes/Pondside/.claude/agents/Alpha.md';
 
 // Working directory for the Agent SDK

@@ -24,7 +24,9 @@ echo "   Backend:  http://localhost:8765"
 echo "   Frontend: $FRONTEND_URL"
 echo ""
 
-(cd backend && npm run dev) &
+# Backend runs WITHOUT hot-reload (dev:stable) to prevent mid-conversation disconnects
+# Frontend runs WITH hot-reload (dev) since UI changes are harmless
+(cd backend && npm run dev:stable) &
 (cd frontend && npm run dev) &
 
 wait
