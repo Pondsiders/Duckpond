@@ -17,7 +17,7 @@ The beat-up car with the spotless engine. The workshop where the tools are hung 
 These are the features that would make Duckpond *home* instead of just "working."
 
 - [x] **Context visibility** — show token count, let Jeffery see how much runway we have. Flying blind sucks. *(Done: green/yellow/red percentage meter in header, updates after each response, 77.5% compact threshold)*
-- [ ] **Image input** — can't look at screenshots, diagrams, Sparkle pics. Essential.
+- [x] **Image input** — can't look at screenshots, diagrams, Sparkle pics. Essential.
 - [ ] **Conversation length management** — compaction, summarization, context window awareness. The unsexy infrastructure that makes long conversations possible.
 - [x] **Disable nanny prompts** — TodoWrite reminders, etc. SDK options should let us kill these. *(Done: Eavesdrop filter strips them out)*
 
@@ -35,7 +35,7 @@ These are the features that would make us *prefer* Duckpond.
 - [x] Tool indicators stuck spinning — never transition from running (spinner) to finished (✓)
 - [x] Conversation index shows first *letter* of first message, not the full message
 - [ ] Hook output invisible — want to see UserPromptSubmit output, etc.
-- [ ] Orientation context on start/resume — MINIMUM: current date/time (ISO-8601), also machine name and specs
+- [x] Orientation context on start/resume — MINIMUM: current date/time (ISO-8601), also machine name and specs
 
 ## Integration (connecting pieces)
 

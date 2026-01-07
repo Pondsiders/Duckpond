@@ -1,0 +1,30 @@
+#!/bin/bash
+# Launch Duckpond (backend + frontend)
+
+# Load Alpha's environment
+eval $(/Volumes/Pondside/Basement/Env/env.sh)
+
+cd /Volumes/Pondside/Barn/Duckpond
+
+# Kill both processes on exit
+trap 'kill 0' EXIT
+
+# Figure out what URL to advertise
+CERT_DIR="/Volumes/Pondside/Basement/Files/certs"
+TAILSCALE_HOST=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null)
+
+if [[ -n "$TAILSCALE_HOST" && -f "$CERT_DIR/$TAILSCALE_HOST.crt" ]]; then
+    FRONTEND_URL="https://${TAILSCALE_HOST}:8766"
+else
+    FRONTEND_URL="http://localhost:8766"
+fi
+
+echo "🦆 Starting Duckpond..."
+echo "   Backend:  http://localhost:8765"
+echo "   Frontend: $FRONTEND_URL"
+echo ""
+
+(cd backend && npm run dev) &
+(cd frontend && npm run dev) &
+
+wait

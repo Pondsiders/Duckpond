@@ -8,7 +8,7 @@
 import * as logfire from '@pydantic/logfire-node';
 import { Router, Request, Response } from 'express';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
+import type { HookCallback, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createAssistantStreamResponse } from 'assistant-stream';
 
 import { CWD, ALLOWED_TOOLS, buildSystemPrompt } from '../config.js';
@@ -18,17 +18,29 @@ import { getRedis, REDIS_KEYS, REDIS_TTL } from '../redis.js';
 
 export const chatRouter = Router();
 
-interface ContentPart {
+// UI content part format (data URLs for images)
+interface UIContentPart {
   type: string;
   text?: string;
   image?: string;
 }
 
+// SDK content part format (Claude API format for images)
+interface SDKContentPart {
+  type: 'text' | 'image';
+  text?: string;
+  source?: {
+    type: 'base64';
+    media_type: string;
+    data: string;
+  };
+}
+
 interface MessageCommand {
   type: string;
   message?: {
-    parts?: ContentPart[];
-    content?: ContentPart[];
+    parts?: UIContentPart[];
+    content?: UIContentPart[];
   };
 }
 
@@ -53,12 +65,13 @@ interface ChatRequestBody {
  */
 function extractUserMessage(
   commands: MessageCommand[]
-): { sdkContent: ContentPart[]; uiContent: ContentPart[] } | null {
+): { sdkContent: SDKContentPart[]; uiContent: UIContentPart[]; hasImages: boolean } | null {
   for (const cmd of commands) {
     if (cmd.type === 'add-message' && cmd.message) {
       const parts = cmd.message.parts || cmd.message.content || [];
-      const sdkContent: ContentPart[] = [];
-      const uiContent: ContentPart[] = [];
+      const sdkContent: SDKContentPart[] = [];
+      const uiContent: UIContentPart[] = [];
+      let hasImages = false;
 
       for (const part of parts) {
         if (part.type === 'text') {
@@ -70,6 +83,7 @@ function extractUserMessage(
         } else if (part.type === 'image' && part.image) {
           // Keep original format for UI
           uiContent.push({ type: 'image', image: part.image });
+          hasImages = true;
 
           // Convert to Claude API format for SDK
           if (part.image.startsWith('data:')) {
@@ -77,7 +91,6 @@ function extractUserMessage(
             const mediaType = header.split(':')[1].split(';')[0];
             sdkContent.push({
               type: 'image',
-              // @ts-expect-error - SDK expects source object for images
               source: {
                 type: 'base64',
                 media_type: mediaType,
@@ -89,7 +102,7 @@ function extractUserMessage(
       }
 
       if (sdkContent.length > 0) {
-        return { sdkContent, uiContent };
+        return { sdkContent, uiContent, hasImages };
       }
     }
   }
@@ -108,7 +121,7 @@ chatRouter.post('/api/chat', async (req: Request, res: Response) => {
     return;
   }
 
-  const { sdkContent, uiContent } = extracted;
+  const { sdkContent, uiContent, hasImages } = extracted;
 
   // Get session ID for resumption
   const sessionId = state.sessionId || undefined;
@@ -116,15 +129,30 @@ chatRouter.post('/api/chat', async (req: Request, res: Response) => {
   logfire.info('Chat request received', {
     sessionId: sessionId || 'new',
     contentPreview: JSON.stringify(sdkContent).slice(0, 100),
-    hasImages: sdkContent.some(p => p.type === 'image'),
+    hasImages,
   });
-  console.log(`[Duckpond] Chat request: sessionId=${sessionId || 'new'}, content=${JSON.stringify(sdkContent).slice(0, 100)}`);
+  console.log(`[Duckpond] Chat request: sessionId=${sessionId || 'new'}, hasImages=${hasImages}, content=${JSON.stringify(sdkContent).slice(0, 100)}`);
 
-  // Build the prompt - just the text for now
+  // Build the prompt
+  // If we have images, we need to use the full SDKUserMessage format
+  // Otherwise, we can use a simple string (which the SDK handles more simply)
   const promptText = sdkContent
     .filter((p) => p.type === 'text')
     .map((p) => p.text)
     .join('\n');
+
+  // Create an async generator that yields a single SDKUserMessage for multimodal content
+  async function* createMultimodalPrompt(): AsyncGenerator<SDKUserMessage> {
+    yield {
+      type: 'user',
+      session_id: sessionId || '',
+      message: {
+        role: 'user',
+        content: sdkContent as unknown[],
+      },
+      parent_tool_use_id: null,
+    } as SDKUserMessage;
+  }
 
   // Create streaming response using assistant-stream
   const response = createAssistantStreamResponse(async (controller) => {
@@ -174,8 +202,11 @@ chatRouter.post('/api/chat', async (req: Request, res: Response) => {
       const systemPrompt = buildSystemPrompt(hud);
 
       // Create the query
+      // Use multimodal prompt format if we have images, otherwise use simple string
+      const prompt = hasImages ? createMultimodalPrompt() : promptText;
+
       const queryIterator = query({
-        prompt: promptText,
+        prompt,
         options: {
           systemPrompt,
           resume: sessionId,

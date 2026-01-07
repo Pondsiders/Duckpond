@@ -48,7 +48,7 @@ For each component:
 - [x] Delete `src/theme.ts`
 - [x] Verify build passes (`npm run build`)
 - [x] Final visual check of all pages
-- [ ] Commit the migration
+- [x] Commit the migration
 
 ---
 
