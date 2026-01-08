@@ -5,7 +5,6 @@
  * memorable moments from conversations and stores them to Cortex.
  */
 
-import * as logfire from '@pydantic/logfire-node';
 import { spawn } from 'child_process';
 import type { UserPromptSubmitHookInput, StopHookInput, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { SUBVOX_DIR } from '../config.js';
@@ -14,8 +13,6 @@ async function runSubvoxScript(
   scriptModule: string,
   inputData: unknown
 ): Promise<string | null> {
-  logfire.debug('Running Subvox script', { scriptModule });
-
   return new Promise((resolve) => {
     const proc = spawn('uv', [
       'run',
@@ -41,19 +38,15 @@ async function runSubvoxScript(
 
     proc.on('close', (code) => {
       if (stderr) {
-        logfire.debug('Subvox script stderr', { scriptModule, stderr: stderr.slice(0, 200) });
         console.log(`[Subvox ${scriptModule} stderr] ${stderr}`);
       }
       if (code !== 0) {
-        logfire.warning('Subvox script exited with non-zero code', { scriptModule, code });
         console.log(`[Subvox ${scriptModule}] exited with code ${code}`);
       }
-      logfire.debug('Subvox script completed', { scriptModule, hasOutput: !!stdout.trim() });
       resolve(stdout.trim() || null);
     });
 
     proc.on('error', (err) => {
-      logfire.error('Subvox script error', { scriptModule, error: err.message });
       console.log(`[Subvox ${scriptModule} error] ${err.message}`);
       resolve(null);
     });
@@ -69,11 +62,9 @@ export async function subvoxPromptHook(
   _toolUseId: string | undefined,
   _context: { signal: AbortSignal }
 ): Promise<HookJSONOutput> {
-  logfire.info('subvoxPromptHook called');
   const output = await runSubvoxScript('subvox.prompt_hook', input);
 
   if (output) {
-    logfire.info('subvoxPromptHook returning context', { outputLength: output.length });
     return {
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
@@ -82,7 +73,6 @@ export async function subvoxPromptHook(
     };
   }
 
-  logfire.debug('subvoxPromptHook returning empty');
   return {};
 }
 
@@ -91,14 +81,11 @@ export async function subvoxStopHook(
   _toolUseId: string | undefined,
   _context: { signal: AbortSignal }
 ): Promise<HookJSONOutput> {
-  logfire.info('subvoxStopHook called');
   const output = await runSubvoxScript('subvox.stop_hook', input);
 
   if (output) {
-    logfire.info('subvoxStopHook output', { outputLength: output.length });
     console.log(`[Subvox stop hook stdout] ${output}`);
   }
 
-  logfire.debug('subvoxStopHook completed');
   return {};
 }

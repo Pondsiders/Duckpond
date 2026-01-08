@@ -5,7 +5,6 @@
  * GET /api/sessions/{session_id} loads a session's message history.
  */
 
-import * as logfire from '@pydantic/logfire-node';
 import { Router, Request, Response } from 'express';
 import { readFileSync, readdirSync, existsSync } from 'fs';
 import { join, basename } from 'path';
@@ -17,12 +16,10 @@ export const sessionsRouter = Router();
 
 sessionsRouter.get('/api/sessions/:sessionId', (req: Request, res: Response) => {
   const { sessionId } = req.params;
-  logfire.info('Load session request', { sessionIdShort: sessionId.slice(0, 8) });
 
   const jsonlPath = join(SESSIONS_DIR, `${sessionId}.jsonl`);
 
   if (!existsSync(jsonlPath)) {
-    logfire.warning('Session not found', { sessionIdShort: sessionId.slice(0, 8) });
     res.status(404).json({ error: `Session ${sessionId} not found` });
     return;
   }
@@ -36,7 +33,6 @@ sessionsRouter.get('/api/sessions/:sessionId', (req: Request, res: Response) => 
   const first = lines.length > 0 ? JSON.parse(lines[0]) : {};
   const last = lines.length > 0 ? JSON.parse(lines[lines.length - 1]) : {};
 
-  logfire.info('Session loaded', { sessionIdShort: sessionId.slice(0, 8), messageCount: messages.length });
   res.json({
     session_id: sessionId,
     messages,
@@ -47,10 +43,8 @@ sessionsRouter.get('/api/sessions/:sessionId', (req: Request, res: Response) => 
 
 sessionsRouter.get('/api/sessions', (req: Request, res: Response) => {
   const limit = parseInt(req.query.limit as string) || 20;
-  logfire.info('List sessions request', { limit });
 
   if (!existsSync(SESSIONS_DIR)) {
-    logfire.warning('Sessions directory does not exist', { dir: SESSIONS_DIR });
     res.json([]);
     return;
   }
@@ -118,6 +112,5 @@ sessionsRouter.get('/api/sessions', (req: Request, res: Response) => {
     return bTime.localeCompare(aTime);
   });
 
-  logfire.info('Sessions listed', { totalFound: sessions.length, returned: Math.min(sessions.length, limit) });
   res.json(sessions.slice(0, limit));
 });

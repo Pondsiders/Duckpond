@@ -5,7 +5,6 @@
  * GET /api/context/{sessionId} returns token counts from Redis (populated by Eavesdrop).
  */
 
-import * as logfire from '@pydantic/logfire-node';
 import { Router, Request, Response } from 'express';
 import { hostname } from 'os';
 import { pso8601Date, pso8601Time, pso8601DateTime } from '../utils/time.js';
@@ -27,34 +26,20 @@ contextRouter.get('/api/context', (_req: Request, res: Response) => {
 contextRouter.get('/api/context/:sessionId', async (req: Request, res: Response) => {
   const { sessionId } = req.params;
 
-  logfire.info('Context request for session', { sessionIdShort: sessionId.slice(0, 8) });
-
   try {
     const r = getRedis();
     const redisKey = REDIS_KEYS.context(sessionId);
     const data = await r.get(redisKey);
 
-    logfire.info('Redis lookup', {
-      key: redisKey,
-      found: !!data,
-      dataPreview: data ? data.slice(0, 100) : null,
-    });
-
     if (data) {
       const parsed = JSON.parse(data);
-      logfire.info('Returning context data', {
-        input_tokens: parsed.input_tokens,
-        sessionIdShort: sessionId.slice(0, 8),
-      });
       res.json(parsed);
       return;
     }
   } catch (err) {
     // Redis down or other error - return empty response
-    logfire.error('Redis error fetching context', { error: String(err), sessionIdShort: sessionId.slice(0, 8) });
     console.warn('[Duckpond] Redis error fetching context:', err);
   }
 
-  logfire.info('No context data found, returning nulls', { sessionIdShort: sessionId.slice(0, 8) });
   res.json({ input_tokens: null, timestamp: null });
 });

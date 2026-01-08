@@ -24,6 +24,7 @@ Your job: Answer questions by fetching the right documentation pages and synthes
 | Claude Platform | https://platform.claude.com/llms.txt | Claude API, Agent SDK, Messages API, tool use, vision, streaming, prompt engineering |
 | Langfuse | https://langfuse.com/llms.txt | Observability, tracing, prompt management, evaluations, self-hosting |
 | assistant-ui | https://www.assistant-ui.com/llms.txt | Open-source React toolkit for production AI chat experiences. (add `.mdx` to URLs)
+| Laminar | https://docs.laminar.sh/llms.txt | Observability platform for LLMs |
 
 ### Special Sources
 

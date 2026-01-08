@@ -2,10 +2,10 @@
  * Duckpond Backend - TypeScript Edition
  *
  * A sovereign chat server built on the Claude Agent SDK.
- * Now with native SessionStart hooks!
+ * Instrumented with Laminar for observability.
  */
 
-import * as logfire from '@pydantic/logfire-node';
+import { Laminar } from '@lmnr-ai/lmnr';
 import express from 'express';
 import cors from 'cors';
 
@@ -14,13 +14,14 @@ import { chatRouter } from './routes/chat.js';
 import { sessionsRouter } from './routes/sessions.js';
 import { contextRouter } from './routes/context.js';
 
-// Configure Logfire first
-logfire.configure({
-  serviceName: 'duckpond-backend',
-  serviceVersion: '0.1.0',
+// Configure Laminar FIRST (before any SDK usage)
+Laminar.initialize({
+  projectApiKey: process.env.LMNR_PROJECT_API_KEY,
+  baseUrl: 'http://primer:8000',
+  httpPort: 8000,
+  forceHttp: true,
+  logLevel: 'info',
 });
-
-logfire.info('Logfire initialized for duckpond-backend');
 
 // Configure environment (Eavesdrop proxy, etc.)
 configureEnvironment();
@@ -39,14 +40,13 @@ app.use(contextRouter);
 
 // Health check
 app.get('/health', (_req, res) => {
-  logfire.debug('Health check requested');
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // Start server
 app.listen(PORT, () => {
-  logfire.info('Server started', { port: PORT });
-  console.log(`Duckpond backend (TypeScript) listening on port ${PORT}`);
+  Laminar.event({ name: 'server_started', attributes: { port: Number(PORT) } });
+  console.log(`Duckpond backend listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Chat endpoint: POST http://localhost:${PORT}/api/chat`);
   console.log(`Sessions: GET http://localhost:${PORT}/api/sessions`);
