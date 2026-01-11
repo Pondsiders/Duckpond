@@ -6,19 +6,15 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { query as origQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { HookCallback, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { Laminar } from '@lmnr-ai/lmnr';
-import { createAssistantStreamResponse } from 'assistant-stream';
 
-// Wrap query for Laminar observability
-const query = Laminar.wrapClaudeAgentQuery(origQuery);
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import { createAssistantStreamResponse } from 'assistant-stream';
 
 import { CWD, ALLOWED_TOOLS, AGENTS, buildSystemPrompt } from '../config.js';
 import { injectSessionTag } from '../hooks/context-tag.js';
-import { subvoxPromptHook, subvoxStopHook } from '../hooks/subvox.js';
+import { subvoxPromptHook, subvoxStopHook, scribeStopHook } from '../hooks/subvox.js';
 import { getRedis, REDIS_KEYS, REDIS_TTL } from '../redis.js';
-import { pso8601DateTime } from '../utils/time.js';
 
 export const chatRouter = Router();
 
@@ -135,28 +131,20 @@ chatRouter.post('/api/chat', async (req: Request, res: Response) => {
   // Build the prompt
   // If we have images, we need to use the full SDKUserMessage format
   // Otherwise, we can use a simple string (which the SDK handles more simply)
-  // Prepend timestamp so Alpha knows exactly when the message was sent
-  const timestamp = pso8601DateTime();
-  const timestampPrefix = `[${timestamp}]\n\n`;
-
-  const promptText = timestampPrefix + sdkContent
+  // NOTE: Don't prepend timestamps here - it breaks SDK slash command detection
+  const promptText = sdkContent
     .filter((p) => p.type === 'text')
     .map((p) => p.text)
     .join('\n');
 
   // Create an async generator that yields a single SDKUserMessage for multimodal content
-  // Prepend timestamp as first text part so Alpha knows when the message was sent
   async function* createMultimodalPrompt(): AsyncGenerator<SDKUserMessage> {
-    const timestampedContent: SDKContentPart[] = [
-      { type: 'text', text: `[${timestamp}]` },
-      ...sdkContent,
-    ];
     yield {
       type: 'user',
       session_id: sessionId || '',
       message: {
         role: 'user',
-        content: timestampedContent as unknown[],
+        content: sdkContent as unknown[],
       },
       parent_tool_use_id: null,
     } as SDKUserMessage;
@@ -222,9 +210,10 @@ chatRouter.post('/api/chat', async (req: Request, res: Response) => {
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
           cwd: CWD,
+          settingSources: ['project'],  // Load CLAUDE.md, .claude/settings.json, skills, etc.
           hooks: {
             UserPromptSubmit: [{ hooks: [injectSessionTag as HookCallback, subvoxPromptHook as HookCallback] }],
-            Stop: [{ hooks: [subvoxStopHook as HookCallback] }],
+            Stop: [{ hooks: [subvoxStopHook as HookCallback, scribeStopHook as HookCallback] }],
           },
         },
       });
@@ -331,14 +320,6 @@ chatRouter.post('/api/chat', async (req: Request, res: Response) => {
           if (sysMessage.subtype === 'compact_boundary') {
             const metadata = sysMessage.compact_metadata;
             console.log(`[Duckpond] SQUOZE! trigger=${metadata?.trigger}, pre_tokens=${metadata?.pre_tokens}`);
-            Laminar.event({
-              name: 'squoze',
-              attributes: {
-                trigger: metadata?.trigger || 'unknown',
-                pre_tokens: metadata?.pre_tokens || 0,
-                sessionId: sessionId || 'unknown',
-              },
-            });
 
             // Set Redis flag for next message to inject orientation context
             if (sessionId) {

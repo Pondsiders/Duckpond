@@ -1,9 +1,6 @@
 #!/bin/bash
 # Launch Duckpond (backend + frontend)
 
-# Load Alpha's environment
-eval $(/Volumes/Pondside/Basement/Env/env.sh)
-
 cd /Volumes/Pondside/Barn/Duckpond
 
 # Kill both processes on exit

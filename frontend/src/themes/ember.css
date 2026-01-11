@@ -1,0 +1,33 @@
+/**
+ * Ember — Warm sans.
+ *
+ * Oak's palette, but tuned for sans-serif.
+ * Still the workshop, but the lights are brighter.
+ * Good coffee instead of whisky.
+ */
+
+:root {
+  /* Core surfaces — warm but lighter than Oak */
+  --theme-background: #1f1f1d;
+  --theme-surface: #171714;
+  --theme-composer: #171714;
+
+  /* Text — warm whites, slightly higher contrast */
+  --theme-text: #f5f3f0;
+  --theme-muted: #a39e94;
+
+  /* Accent — amber, less red than Oak */
+  --theme-primary: #d4853a;
+
+  /* Components */
+  --theme-user-bubble: #2a2926;
+  --theme-code-bg: #111110;
+  --theme-border: rgba(163, 158, 148, 0.2);
+
+  /* Semantic */
+  --theme-success: #4ade80;
+  --theme-error: #ef4444;
+
+  /* Typography scale */
+  --theme-font-scale: 1.25;
+}

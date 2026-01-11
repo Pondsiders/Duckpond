@@ -1,13 +1,13 @@
 /**
- * Subvox hooks — the voice that whispers.
+ * Subvox and Scribe hooks — memory systems.
  *
- * These hooks bridge Duckpond to the Subvox memory system, which extracts
- * memorable moments from conversations and stores them to Cortex.
+ * Subvox: extracts memorable moments from conversations and stores them to Cortex.
+ * Scribe: archives conversation transcripts to Postgres for continuity.
  */
 
 import { spawn } from 'child_process';
 import type { UserPromptSubmitHookInput, StopHookInput, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
-import { SUBVOX_DIR } from '../config.js';
+import { SUBVOX_DIR, SCRIBE_PATH } from '../config.js';
 
 async function runSubvoxScript(
   scriptModule: string,
@@ -88,4 +88,46 @@ export async function subvoxStopHook(
   }
 
   return {};
+}
+
+/**
+ * Scribe stop hook — archives conversation turns to Postgres.
+ * Runs the Scribe Python script with the stop hook input.
+ */
+export async function scribeStopHook(
+  input: StopHookInput,
+  _toolUseId: string | undefined,
+  _context: { signal: AbortSignal }
+): Promise<HookJSONOutput> {
+  return new Promise((resolve) => {
+    const proc = spawn('uv', ['run', SCRIBE_PATH], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stderr = '';
+
+    proc.stderr.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    proc.on('close', (code) => {
+      if (stderr) {
+        console.log(`[Scribe stderr] ${stderr}`);
+      }
+      if (code !== 0) {
+        console.log(`[Scribe] exited with code ${code}`);
+      }
+    });
+
+    proc.on('error', (err) => {
+      console.log(`[Scribe error] ${err.message}`);
+    });
+
+    // Send input data (contains transcript_path, session_id, etc.)
+    proc.stdin.write(JSON.stringify(input));
+    proc.stdin.end();
+
+    // Don't wait for Scribe to finish—it can run in background
+    resolve({});
+  });
 }

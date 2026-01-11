@@ -1,3 +1,4 @@
+@import url("https://use.typekit.net/hye7mqw.css");
 @import "tailwindcss";
 @import "./themes/current.css";
 
@@ -32,9 +33,9 @@
   --color-success: var(--theme-success);
   --color-error: var(--theme-error);
 
-  /* Typography */
-  --font-family-serif: Georgia, "Times New Roman", serif;
-  --font-family-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  /* Typography — Tailwind v4 uses --font-serif, not --font-family-serif */
+  --font-serif: "proxima-nova", Georgia, "Times New Roman", serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
 }
 
 /**
@@ -47,7 +48,7 @@
 @layer base {
   body {
     margin: 0;
-    font-family: var(--font-family-serif);
+    font-family: var(--font-serif);
     background-color: var(--theme-background);
     color: var(--theme-text);
     -webkit-font-smoothing: antialiased;

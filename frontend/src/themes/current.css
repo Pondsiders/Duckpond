@@ -5,7 +5,9 @@
  * Vite will hot-reload when this file changes.
  *
  * Available themes:
- *   - oak.css (warm, dark, workshop vibes)
+ *   - oak.css    — warm, dark, workshop vibes (pairs with Miller Text)
+ *   - slate.css  — cool, clean, modern (pairs with Proxima Nova)
+ *   - ember.css  — warm sans, coffee instead of whisky (pairs with Proxima Nova)
  */
 
-@import "./oak.css";
+@import "./slate.css";

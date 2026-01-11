@@ -27,6 +27,9 @@ export const SESSIONS_DIR = join(homedir(), '.claude', 'projects', '-Volumes-Pon
 // Subvox hooks directory
 export const SUBVOX_DIR = '/Volumes/Pondside/Basement/Cortex/subvox';
 
+// Scribe script path
+export const SCRIBE_PATH = '/Volumes/Pondside/Basement/Scribe/scribe.py';
+
 // --- API ---
 
 // Eavesdrop proxy (memory injection, observability)

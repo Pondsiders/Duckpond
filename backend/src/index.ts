@@ -2,10 +2,9 @@
  * Duckpond Backend - TypeScript Edition
  *
  * A sovereign chat server built on the Claude Agent SDK.
- * Instrumented with Laminar for observability.
  */
 
-import { Laminar } from '@lmnr-ai/lmnr';
+
 import express from 'express';
 import cors from 'cors';
 
@@ -13,15 +12,6 @@ import { configureEnvironment } from './config.js';
 import { chatRouter } from './routes/chat.js';
 import { sessionsRouter } from './routes/sessions.js';
 import { contextRouter } from './routes/context.js';
-
-// Configure Laminar FIRST (before any SDK usage)
-Laminar.initialize({
-  projectApiKey: process.env.LMNR_PROJECT_API_KEY,
-  baseUrl: 'http://primer:8000',
-  httpPort: 8000,
-  forceHttp: true,
-  logLevel: 'info',
-});
 
 // Configure environment (Eavesdrop proxy, etc.)
 configureEnvironment();
@@ -44,10 +34,21 @@ app.get('/health', (_req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
-  Laminar.event({ name: 'server_started', attributes: { port: Number(PORT) } });
+const server = app.listen(PORT, () => {
   console.log(`Duckpond backend listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Chat endpoint: POST http://localhost:${PORT}/api/chat`);
   console.log(`Sessions: GET http://localhost:${PORT}/api/sessions`);
 });
+
+// Graceful shutdown
+const shutdown = async (signal: string) => {
+  console.log(`\n[Duckpond] ${signal} received, shutting down gracefully...`);
+  server.close(() => {
+    console.log('[Duckpond] Shutdown complete');
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

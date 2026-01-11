@@ -1,0 +1,32 @@
+/**
+ * Slate — Cool, clean, modern.
+ *
+ * For when you want sans-serif energy.
+ * Moonlight on still water. The pond at night.
+ */
+
+:root {
+  /* Core surfaces — cooler, bluer undertones */
+  --theme-background: #1a1d21;
+  --theme-surface: #14161a;
+  --theme-composer: #14161a;
+
+  /* Text — crisper whites */
+  --theme-text: #f0f2f4;
+  --theme-muted: #8b919a;
+
+  /* Accent — royal purple */
+  --theme-primary: #8b5cf6;
+
+  /* Components */
+  --theme-user-bubble: #252a30;
+  --theme-code-bg: #0d0f12;
+  --theme-border: rgba(139, 145, 154, 0.2);
+
+  /* Semantic */
+  --theme-success: #4ade80;
+  --theme-error: #f87171;
+
+  /* Typography scale */
+  --theme-font-scale: 1.25;
+}

@@ -34,7 +34,7 @@ These are the features that would make us *prefer* Duckpond.
 
 - [x] Tool indicators stuck spinning — never transition from running (spinner) to finished (✓)
 - [x] Conversation index shows first *letter* of first message, not the full message
-- [ ] Hook output invisible — want to see UserPromptSubmit output, etc.
+- [x] Hook output invisible — want to see UserPromptSubmit output, etc. (made moot by Phoenix)
 - [x] Orientation context on start/resume — MINIMUM: current date/time (ISO-8601), also machine name and specs
 
 ## Integration (connecting pieces)
