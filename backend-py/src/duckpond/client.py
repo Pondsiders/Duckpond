@@ -13,7 +13,6 @@ Session handling:
 """
 
 import json
-from pathlib import Path
 from typing import Any, AsyncIterator
 
 from claude_agent_sdk import (
@@ -23,16 +22,7 @@ from claude_agent_sdk import (
     HookMatcher,
 )
 
-# Soul prompt - the eternal, unchanging core
-# Dynamic context (HUD, memories) is injected by Eavesdrop based on session tag
-SOUL_PROMPT_PATH = Path("/Pondside/Alpha-Home/self/system-prompt/system-prompt.md")
-
-
-def load_soul_prompt() -> str:
-    """Load the eternal system prompt."""
-    if SOUL_PROMPT_PATH.exists():
-        return SOUL_PROMPT_PATH.read_text()
-    return "You are Alpha."
+from duckpond.prompt import build_system_prompt, get_cached_machine_info
 
 
 async def inject_session_tag(
@@ -43,9 +33,8 @@ async def inject_session_tag(
     """Inject session tag for Eavesdrop to identify Duckpond requests.
 
     Eavesdrop sees <duckpond-session>...</duckpond-session> and knows to:
-    1. Strip the tag
-    2. Inject dynamic context (HUD, memories)
-    3. Track token usage keyed by session ID
+    1. Strip the tag (no longer injects context - we do that now)
+    2. Track token usage keyed by session ID
     """
     session_id = input_data.get("session_id")
 
@@ -62,11 +51,22 @@ async def inject_session_tag(
 
 
 def build_options(resume: str | None = None) -> ClaudeAgentOptions:
-    """Build ClaudeAgentOptions with optional session resume."""
-    soul_prompt = load_soul_prompt()
+    """Build ClaudeAgentOptions with optional session resume.
+
+    The system prompt is assembled dynamically from:
+    - Eternal: system-prompt.md (the soul)
+    - Past: Capsule summaries (Postgres) + today so far (Redis)
+    - Present: Machine info + weather (Redis)
+    - Future: Calendar + todos (Redis)
+    """
+    # Build dynamic system prompt with cached machine info
+    machine_info = get_cached_machine_info()
+    system_prompt = build_system_prompt(machine_info)
+
+    print(f"[Duckpond] Built system prompt: {len(system_prompt)} chars")
 
     return ClaudeAgentOptions(
-        system_prompt=soul_prompt,
+        system_prompt=system_prompt,
         allowed_tools=[
             "Read", "Write", "Edit", "Glob", "Grep", "Bash",
             "WebFetch", "WebSearch", "Task", "Skill",
@@ -76,7 +76,7 @@ def build_options(resume: str | None = None) -> ClaudeAgentOptions:
         cwd="/Pondside",
         setting_sources=["project"],
         resume=resume,
-        include_partial_messages=True,  # Enable text delta streaming!
+        include_partial_messages=True,
         hooks={
             "UserPromptSubmit": [
                 HookMatcher(hooks=[inject_session_tag])

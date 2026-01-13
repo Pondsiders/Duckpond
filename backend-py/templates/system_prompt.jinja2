@@ -1,0 +1,51 @@
+<eternal>
+{{ eternal }}
+</eternal>
+
+<past>
+{% if summary1 %}
+# {{ summary1.format_header() }}
+
+{{ summary1.summary }}
+
+---
+{% endif %}
+{% if summary2 %}
+# {{ summary2.format_header() }}
+
+{{ summary2.summary }}
+
+---
+{% endif %}
+{% if summary3 %}
+# {{ today_header }}
+
+{{ summary3 }}
+{% else %}
+No memories from today so far.
+{% endif %}
+</past>
+
+<present>
+{% if machine %}
+**Machine:** {{ machine.name }}
+**Hardware:** {{ machine.cores }} cores, {{ machine.ram }}{% if machine.gpu %}, {{ machine.gpu }}{% endif %}
+
+**Uptime:** {{ machine.uptime }}
+**Disk:** {{ machine.disk_free }}
+{% endif %}
+
+{% if weather %}
+{{ weather }}
+{% endif %}
+</present>
+
+<future>
+{% if calendar %}
+{{ calendar }}
+{% endif %}
+
+{% if todos %}
+{{ todos }}
+{% endif %}
+</future>

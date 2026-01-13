@@ -11,6 +11,8 @@ dependencies = [
     "assistant-stream>=0.0.31",
     "redis>=5.0.0",
     "pendulum>=3.0.0",
+    "psycopg[binary]>=3.0.0",
+    "jinja2>=3.0.0",
 ]
 
 [project.optional-dependencies]
