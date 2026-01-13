@@ -232,35 +232,26 @@ def build_system_prompt(machine_info: MachineInfo | None = None) -> str:
     # Machine info (compute if not provided)
     machine = machine_info or get_machine_info()
 
-    # Redis data
+    # Redis data (weather, calendar, todos)
     try:
         r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
         weather = get_redis_value(r, "hud:weather")
         calendar = get_redis_value(r, "hud:calendar")
         todos = get_redis_value(r, "hud:todos")
-        summary3 = get_redis_value(r, "hud:summary3")  # Today so far
     except Exception as e:
         print(f"[Duckpond] Error connecting to Redis: {e}")
         weather = None
         calendar = None
         todos = None
-        summary3 = None
 
-    # Postgres data (Capsule summaries)
+    # Postgres data (Capsule summaries for completed periods)
     summary1, summary2 = get_capsule_summaries()
-
-    # Generate "today so far" header
-    import pendulum
-    now = pendulum.now("America/Los_Angeles")
-    today_header = now.format("dddd MMM D YYYY") + " so far"
 
     # Render template
     return template.render(
         eternal=eternal,
         summary1=summary1,
         summary2=summary2,
-        summary3=summary3,
-        today_header=today_header,
         machine=machine,
         weather=weather,
         calendar=calendar,
