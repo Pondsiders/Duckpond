@@ -13,8 +13,7 @@ import { createAssistantStreamResponse } from 'assistant-stream';
 
 import { CWD, ALLOWED_TOOLS, AGENTS, buildSystemPrompt } from '../config.js';
 import { injectSessionTag } from '../hooks/context-tag.js';
-import { subvoxPromptHook, subvoxStopHook, scribeStopHook } from '../hooks/subvox.js';
-import { getRedis, REDIS_KEYS, REDIS_TTL } from '../redis.js';
+import { getRedis, REDIS_KEYS, REDIS_TTL, fetchDynamicContext } from '../redis.js';
 
 export const chatRouter = Router();
 
@@ -182,19 +181,11 @@ chatRouter.post('/api/chat', async (req: Request, res: Response) => {
     sendStateUpdate();
 
     try {
-      // Fetch HUD from Redis (populated by Pulse hourly)
-      let hud: string | undefined;
-      try {
-        const hudData = await getRedis().get(REDIS_KEYS.hud);
-        if (hudData) {
-          hud = hudData;
-        }
-      } catch (err) {
-        console.warn('[Duckpond] Failed to fetch HUD from Redis:', err);
-      }
+      // Fetch dynamic context from Redis (populated by Pulse hourly)
+      const dynamicContext = await fetchDynamicContext();
 
       // Build fresh system prompt for this sitting
-      const systemPrompt = buildSystemPrompt(hud);
+      const systemPrompt = buildSystemPrompt(dynamicContext ?? undefined);
 
       // Create the query
       // Use multimodal prompt format if we have images, otherwise use simple string
@@ -212,8 +203,7 @@ chatRouter.post('/api/chat', async (req: Request, res: Response) => {
           cwd: CWD,
           settingSources: ['project'],  // Load CLAUDE.md, .claude/settings.json, skills, etc.
           hooks: {
-            UserPromptSubmit: [{ hooks: [injectSessionTag as HookCallback, subvoxPromptHook as HookCallback] }],
-            Stop: [{ hooks: [subvoxStopHook as HookCallback, scribeStopHook as HookCallback] }],
+            UserPromptSubmit: [{ hooks: [injectSessionTag as HookCallback] }],
           },
         },
       });

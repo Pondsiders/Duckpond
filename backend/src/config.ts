@@ -13,22 +13,22 @@ import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 // --- Paths ---
 
 // Alpha's system prompt
-export const SYSTEM_PROMPT_PATH = '/Volumes/Pondside/Alpha-Home/self/system-prompt/system-prompt.md';
+export const SYSTEM_PROMPT_PATH = '/Pondside/Alpha-Home/self/system-prompt/system-prompt.md';
 
 // Working directory for the Agent SDK
-export const CWD = '/Volumes/Pondside';
+export const CWD = '/Pondside';
 
 // Agent definitions directory
-export const AGENTS_DIR = '/Volumes/Pondside/Barn/Duckpond/agents';
+export const AGENTS_DIR = '/Pondside/Barn/Duckpond/agents';
 
 // Claude Code session storage
-export const SESSIONS_DIR = join(homedir(), '.claude', 'projects', '-Volumes-Pondside');
+export const SESSIONS_DIR = join(homedir(), '.claude', 'projects', '-Pondside');
 
 // Subvox hooks directory
-export const SUBVOX_DIR = '/Volumes/Pondside/Basement/Cortex/subvox';
+export const SUBVOX_DIR = '/Pondside/Basement/Cortex/subvox';
 
 // Scribe script path
-export const SCRIBE_PATH = '/Volumes/Pondside/Basement/Scribe/scribe.py';
+export const SCRIBE_PATH = '/Pondside/Basement/Scribe/scribe.py';
 
 // --- API ---
 
@@ -48,6 +48,7 @@ export const ALLOWED_TOOLS = [
   'WebFetch',
   'WebSearch',
   'Task',  // Required for subagent invocation
+  'Skill', // Required for skills
 ];
 
 // --- Agents ---
@@ -128,35 +129,93 @@ function loadSoulPrompt(): string {
 const SOUL_PROMPT = loadSoulPrompt();
 
 /**
- * Build a fresh system prompt for a new sitting.
- * Includes the soul prompt plus dynamic context.
- *
- * Note: We deliberately exclude time to avoid cache invalidation.
- * The timestamp hook handles per-message timing.
- *
- * @param hud - Optional HUD markdown from Redis (fetched by caller)
+ * Dynamic context components fetched from Redis.
  */
-export function buildSystemPrompt(hud?: string): string {
-  let sittingContext = `
----
+export interface DynamicContext {
+  // Past: Memory summaries
+  summary1?: string;  // Yesterday (or period before last)
+  summary2?: string;  // Last night (or previous period)
+  summary3?: string;  // Today so far (null at night)
 
-## Sitting Context
+  // Present: Current state
+  weather?: string;
 
-**Machine:** ${hostname()}
-**Via:** Duckpond
-`;
+  // Future: What's coming
+  calendar?: string;
+  todos?: string;
 
-  if (hud) {
-    sittingContext += `
----
+  // Metadata
+  updated?: string;
+}
 
-## HUD
+/**
+ * Build a fresh system prompt for a new sitting.
+ *
+ * Structure uses XML-style tags for clear demarcation:
+ * - <eternal>: Soul prompt (system-prompt.md) - the unchanging core
+ * - <past>: Memory summaries - what I've been through recently
+ * - <present>: Machine info, weather - where I am right now
+ * - <future>: Calendar, todos - what's coming
+ */
+export function buildSystemPrompt(ctx?: DynamicContext): string {
+  const sections: string[] = [];
 
-${hud}
-`;
+  // === ETERNAL ===
+  sections.push('<eternal>');
+  sections.push(SOUL_PROMPT);
+  sections.push('</eternal>');
+
+  // === PAST ===
+  // Memory summaries - what I've been through recently
+  const pastParts: string[] = [];
+  if (ctx?.summary1) pastParts.push(`Yesterday:\n${ctx.summary1}`);
+  if (ctx?.summary2) pastParts.push(`Last night:\n${ctx.summary2}`);
+  if (ctx?.summary3) pastParts.push(`Today so far:\n${ctx.summary3}`);
+
+  if (pastParts.length > 0) {
+    sections.push('');
+    sections.push('<past>');
+    sections.push(pastParts.join('\n\n'));
+    sections.push('</past>');
   }
 
-  return SOUL_PROMPT + sittingContext;
+  // === PRESENT ===
+  // Machine context and current conditions
+  const presentParts: string[] = [];
+  presentParts.push(`Machine: ${hostname()}`);
+  presentParts.push('Via: Duckpond');
+  if (ctx?.weather) {
+    presentParts.push('');
+    presentParts.push(ctx.weather);
+  }
+  if (ctx?.updated) {
+    presentParts.push('');
+    presentParts.push(`(Refreshed ${ctx.updated})`);
+  }
+
+  sections.push('');
+  sections.push('<present>');
+  sections.push(presentParts.join('\n'));
+  sections.push('</present>');
+
+  // === FUTURE ===
+  // Calendar and todos - what's coming
+  const futureParts: string[] = [];
+  if (ctx?.calendar) futureParts.push(ctx.calendar);
+  if (ctx?.todos) {
+    if (futureParts.length > 0) futureParts.push('');
+    futureParts.push('Todos:');
+    futureParts.push(ctx.todos);
+  }
+
+  if (futureParts.length > 0) {
+    sections.push('');
+    sections.push('<future>');
+    sections.push(futureParts.join('\n'));
+    sections.push('</future>');
+  }
+
+  return sections.join('\n').trim();
 }
 
 // --- Environment Setup ---
