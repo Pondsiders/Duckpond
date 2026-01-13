@@ -495,9 +495,9 @@ No custom loading UI needed for v1—the defaults work fine.
 
 ### Project Slug
 
-Claude Code replaces slashes with hyphens: `/Volumes/Pondside` → `-Volumes-Pondside`.
+Claude Code replaces slashes with hyphens: `/Pondside` → `-Pondside`.
 
-MOOSE hardcodes `/Volumes/Pondside` as cwd and `-Volumes-Pondside` as the project slug. Simple.
+MOOSE hardcodes `/Pondside` as cwd and `-Pondside` as the project slug. Simple.
 
 ### Session Titles
 
@@ -661,7 +661,7 @@ MOOSE is portable. Run it on primer for development, alpha-pi for always-on acce
 
 ```bash
 # Start MOOSE (backend + frontend)
-cd /Volumes/Pondside/Barn/MOOSE
+cd /Pondside/Barn/MOOSE
 uv run moose serve --port 8000
 
 # Access from anywhere

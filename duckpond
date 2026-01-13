@@ -1,13 +1,11 @@
 #!/bin/bash
-# Launch Duckpond (backend + frontend)
+# Launch Duckpond (Python backend + Node frontend)
 
-cd /Volumes/Pondside/Barn/Duckpond
-
-# Kill both processes on exit
-trap 'kill 0' EXIT
+set -e
+cd /Pondside/Barn/Duckpond
 
 # Figure out what URL to advertise
-CERT_DIR="/Volumes/Pondside/Basement/Files/certs"
+CERT_DIR="/Pondside/Basement/Files/certs"
 TAILSCALE_HOST=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null)
 
 if [[ -n "$TAILSCALE_HOST" && -f "$CERT_DIR/$TAILSCALE_HOST.crt" ]]; then
@@ -17,13 +15,13 @@ else
 fi
 
 echo "🦆 Starting Duckpond..."
-echo "   Backend:  http://localhost:8765"
+echo "   Backend:  http://localhost:8765 (Python)"
 echo "   Frontend: $FRONTEND_URL"
 echo ""
 
-# Backend runs WITHOUT hot-reload (dev:stable) to prevent mid-conversation disconnects
-# Frontend runs WITH hot-reload (dev) since UI changes are harmless
-(cd backend && npm run dev:stable) &
-(cd frontend && npm run dev) &
-
-wait
+npx concurrently \
+    --names "backend,frontend" \
+    --prefix-colors "blue,green" \
+    --kill-others \
+    "cd backend-py && uv run uvicorn duckpond.main:app --host 0.0.0.0 --port 8765" \
+    "cd frontend && npm run dev"

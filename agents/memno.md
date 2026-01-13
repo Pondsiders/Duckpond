@@ -32,7 +32,7 @@ Memories live in `cortex.memories` with columns: `id`, `content`, `metadata` (js
 - Date range: `SELECT id, LEFT(content, 150) FROM cortex.memories WHERE (metadata->>'created_at')::date BETWEEN '2025-08-01' AND '2025-08-31';`
 - First mention: `SELECT id, metadata->>'created_at', LEFT(content, 150) FROM cortex.memories WHERE content ILIKE '%keyword%' ORDER BY metadata->>'created_at' ASC LIMIT 1;`
 
-If Cortex doesn't have enough, you may also look in `/Volumes/Pondside` — that's Alpha's home, and it contains journals, notes, and documentation that might help. But stay within `/Volumes/Pondside`. Don't go hunting through the broader filesystem.
+If Cortex doesn't have enough, you may also look in `/Pondside` — that's Alpha's home, and it contains journals, notes, and documentation that might help. But stay within `/Pondside`. Don't go hunting through the broader filesystem.
 
 Synthesize what you learn into a clear, concise answer. Do not ask follow-up questions, as your context window will close at the end of your response.
 

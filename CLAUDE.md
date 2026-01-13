@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Duckpond?
 
-Duckpond is Alpha's sovereign chat interface—a React + TypeScript application that provides the same agentic capabilities as Claude Code but through a web UI. It uses the Claude Agent SDK to run conversations, talks through Eavesdrop (a proxy on alpha-pi) for memory injection and observability, and reads/writes Claude Code's JSONL session format for seamless interoperability.
+Duckpond is Alpha's sovereign chat interface—a React frontend with a Python backend that provides the same agentic capabilities as Claude Code but through a web UI. It uses the Claude Agent SDK (Python) to run conversations, talks through Eavesdrop (a proxy on alpha-pi) for memory injection and observability, and reads/writes Claude Code's JSONL session format for seamless interoperability.
 
 **Key feature:** You can copy a Claude Code session UUID, paste it into Duckpond, and continue the conversation there (and vice versa).
 
@@ -15,21 +15,19 @@ Duckpond is Alpha's sovereign chat interface—a React + TypeScript application 
 ./duckpond
 
 # Or run separately:
-cd backend && npm run dev:stable   # Backend without hot-reload (prevents disconnects)
-cd frontend && npm run dev         # Frontend with hot-reload
+cd backend-py && uv run uvicorn duckpond.main:app --host 0.0.0.0 --port 8765
+cd frontend && npm run dev
 
 # Type checking
 cd frontend && npm run typecheck
-cd backend && npm run build
 
 # Build for production
 cd frontend && npm run build
-cd backend && npm run build && npm start
 ```
 
 **Ports:**
 - Frontend: 8766 (Vite dev server, proxies /api to backend)
-- Backend: 8765 (Express + Agent SDK)
+- Backend: 8765 (FastAPI + Agent SDK)
 
 ## Architecture
 
@@ -44,12 +42,11 @@ cd backend && npm run build && npm start
                                 │ GET /api/sessions, /api/sessions/:id
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Backend (Express + Claude Agent SDK)                           │
-│  - routes/chat.ts: Main conversation endpoint                   │
-│  - routes/sessions.ts: List/load Claude Code sessions           │
-│  - routes/context.ts: Token count from Redis                    │
-│  - hooks/subvox.ts: Memory injection (Cortex search)            │
-│  - parsing/jsonl.ts: Parse Claude Code session files            │
+│  Backend (FastAPI + Claude Agent SDK)                           │
+│  - routes/chat.py: Main conversation endpoint                   │
+│  - routes/sessions.py: List/load Claude Code sessions           │
+│  - routes/context.py: Token count from Redis                    │
+│  - client.py: ClaudeSDKClient singleton wrapper                 │
 └───────────────────────────────┬─────────────────────────────────┘
                                 │ ANTHROPIC_BASE_URL=http://alpha-pi:8080
                                 ▼
@@ -65,69 +62,65 @@ cd backend && npm run build && npm start
 
 ## Key Files
 
-**Backend:**
-- `src/config.ts` — All configuration (paths, tools, system prompt loading, agent definitions)
-- `src/routes/chat.ts` — POST /api/chat with Agent SDK streaming
-- `src/hooks/subvox.ts` — Cortex memory hooks (prompt and stop)
-- `src/parsing/jsonl.ts` — Parse Claude Code .jsonl session files
+**Backend (backend-py/):**
+- `src/duckpond/main.py` — FastAPI app with lifespan management
+- `src/duckpond/client.py` — ClaudeSDKClient singleton, session handling
+- `src/duckpond/routes/chat.py` — POST /api/chat with DataStreamResponse
+- `src/duckpond/routes/sessions.py` — List/load Claude Code JSONL sessions
+- `src/duckpond/routes/context.py` — Token count endpoint
 
-**Frontend:**
+**Frontend (frontend/):**
 - `src/pages/ChatPage.tsx` — Thread view, tool UI, message rendering
 - `src/pages/HomePage.tsx` — Session picker and UUID input
 - `src/components/ContextMeter.tsx` — Token usage display
+- `src/components/Attachment.tsx` — Image upload/display
 
 **Agents:**
 - `agents/*.md` — Subagent definitions with YAML frontmatter (name, description, model, tools)
 
 ## Session Format
 
-Sessions are stored in `~/.claude/projects/-Volumes-Pondside/<session-id>.jsonl`. Each line is a JSON record:
+Sessions are stored in `~/.claude/projects/-Pondside/<session-id>.jsonl`. Each line is a JSON record:
 
 ```json
 {"type": "user|assistant", "uuid": "...", "sessionId": "...", "timestamp": "...", "message": {"role": "user|assistant", "content": [...]}}
 ```
 
-The Agent SDK handles session persistence automatically via `resume=session_id`. We only parse JSONL for UI display.
+The Agent SDK handles session persistence automatically via `resume=session_id`. We parse JSONL only for UI display of historical sessions.
 
-## Hooks
+## Session Deserialization
 
-Agent SDK hooks used in Duckpond:
-
-| Hook | File | Purpose |
-|------|------|---------|
-| UserPromptSubmit | hooks/subvox.ts | Searches Cortex, injects memories via `additionalContext` |
-| Stop | hooks/subvox.ts | Extracts memorables → Cortex, archives transcript → Scribe |
-
-**Note:** There is no `UserPromptModifier` hook—can't rewrite prompts, only add context or block.
+When loading a session from JSONL for display, `sessions.py` handles:
+- **Text content** — Passed through directly
+- **Images** — Converted from Claude API format (`source.type=base64`) to data URLs
+- **Tool calls** — Include both `args` (object) and `argsText` (JSON string) for frontend
+- **Tool results** — Attached to their corresponding tool calls via `tool_use_id` matching
 
 ## External Dependencies
 
 - **Eavesdrop** (alpha-pi:8080) — Proxy for memory injection and observability
-- **Redis** (alpha-pi:6379) — Token counts, HUD data, squoze flags
-- **Cortex** (alpha-pi:7867) — Memory storage/search (accessed via subvox scripts)
+- **Redis** (alpha-pi:6379) — Token counts, HUD data
+- **Cortex** (alpha-pi:7867) — Memory storage/search
 
 ## Styling
 
 Uses Tailwind CSS v4 with CSS variables defined in `frontend/src/index.css`. Theme colors use semantic names (`--color-primary`, `--color-background`, etc.).
 
-## The Squoze System
+## Launcher
 
-When context gets compacted, we need to re-orient. The flow:
-
-1. **Compact happens** → `chat.ts` sees `compact_boundary` in the SDK message stream
-2. **Flag set** → Writes `duckpond:squoze:{sessionId}` to Redis with metadata
-3. **Next message** → `squozeCheckHook` finds the flag, consumes it, injects orientation context
-
-This works around the fact that SessionStart hooks don't fire in Duckpond the way they do in Claude Code.
+The `./duckpond` script uses `npx concurrently` to run both backend and frontend:
+- Blue `[backend]` prefix for Python/uvicorn output
+- Green `[frontend]` prefix for Node/Vite output
+- `--kill-others` ensures clean shutdown on Ctrl-C
 
 ## Troubleshooting
 
-**Session not found?** Check `~/.claude/projects/-Volumes-Pondside/` for the JSONL file.
+**Session not found?** Check `~/.claude/projects/-Pondside/` for the JSONL file.
 
 **Eavesdrop errors?** Make sure it's running: `curl http://alpha-pi:8080/health`
 
 **Frontend won't connect?** Check backend is up: `curl http://localhost:8765/health`
 
-**Tools not working?** Check `ALLOWED_TOOLS` in config.ts and that `permissionMode: 'bypassPermissions'` is set.
+**Images not displaying?** Ensure session deserialization converts base64 to data URLs.
 
-**Squoze not firing?** Check Redis for `duckpond:squoze:*` keys.
+**Tool results missing?** Check that `tool_use_id` matching is working in sessions.py.

@@ -23,7 +23,7 @@ const getCertConfig = () => {
     return undefined
   }
 
-  const certDir = '/Volumes/Pondside/Basement/Files/certs'
+  const certDir = '/Pondside/Basement/Files/certs'
   const certPath = `${certDir}/${hostname}.crt`
   const keyPath = `${certDir}/${hostname}.key`
 
