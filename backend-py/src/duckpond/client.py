@@ -19,35 +19,9 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     ClaudeAgentOptions,
     Message,
-    HookMatcher,
 )
 
 from duckpond.prompt import build_system_prompt, get_cached_machine_info
-
-
-async def inject_session_tag(
-    input_data: dict[str, Any],
-    tool_use_id: str | None,
-    context: Any,
-) -> dict[str, Any]:
-    """Inject session tag for Eavesdrop to identify Duckpond requests.
-
-    Eavesdrop sees <duckpond-session>...</duckpond-session> and knows to:
-    1. Strip the tag (no longer injects context - we do that now)
-    2. Track token usage keyed by session ID
-    """
-    session_id = input_data.get("session_id")
-
-    if session_id:
-        tag = f"<duckpond-session>{session_id}</duckpond-session>"
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "UserPromptSubmit",
-                "additionalContext": tag,
-            }
-        }
-
-    return {}
 
 
 def build_options(resume: str | None = None) -> ClaudeAgentOptions:
@@ -77,11 +51,9 @@ def build_options(resume: str | None = None) -> ClaudeAgentOptions:
         setting_sources=["project"],
         resume=resume,
         include_partial_messages=True,
-        hooks={
-            "UserPromptSubmit": [
-                HookMatcher(hooks=[inject_session_tag])
-            ]
-        },
+        # Hooks are loaded from settings.json via setting_sources=["project"]
+        # The shared eavesdrop-metadata.py hook injects session ID for both
+        # Claude Code and Duckpond
     )
 
 
