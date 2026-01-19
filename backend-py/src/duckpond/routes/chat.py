@@ -7,8 +7,10 @@ POST /api/chat/interrupt stops the current operation.
 """
 
 import json
+import logging
 from typing import Any
 
+import orjson
 from fastapi import APIRouter, Request
 from assistant_stream import create_run, RunController
 from assistant_stream.serialization import DataStreamResponse
@@ -16,14 +18,18 @@ from assistant_stream.serialization import DataStreamResponse
 from claude_agent_sdk import (
     AssistantMessage,
     UserMessage,
-    SystemMessage,
     ResultMessage,
     TextBlock,
     ToolUseBlock,
     ToolResultBlock,
 )
 
+from pondside.telemetry import get_tracer
+
 from duckpond.client import client
+
+logger = logging.getLogger(__name__)
+tracer = get_tracer()
 
 router = APIRouter()
 
@@ -82,141 +88,140 @@ def extract_user_message(body: dict[str, Any]) -> tuple[Any, list[dict], bool, s
 @router.post("/api/chat")
 async def chat(request: Request) -> DataStreamResponse:
     """Handle chat messages and stream responses."""
-    body = await request.json()
-    sdk_content, ui_content, has_images, session_id = extract_user_message(body)
-    state = body.get("state", {})
-    messages = list(state.get("messages", []))
+    with tracer.start_as_current_span("duckpond.chat") as chat_span:
+        # Parse request (using orjson for speed on large payloads)
+        with tracer.start_as_current_span("duckpond.parse_request"):
+            raw_body = await request.body()
+            body = orjson.loads(raw_body)
+            sdk_content, ui_content, has_images, session_id = extract_user_message(body)
+            state = body.get("state", {})
+            messages = state.get("messages", [])
 
-    # session_id is None for new conversation, or a UUID string for resume
-    print(f"[Duckpond] Chat request: sessionId={session_id[:8] if session_id else 'new'}..., hasImages={has_images}")
+        chat_span.set_attribute("duckpond.message_count", len(messages))
+        chat_span.set_attribute("duckpond.has_images", has_images)
+        logger.info(f"chat request: sessionId={session_id[:8] if session_id else 'new'}..., messages={len(messages)}")
 
-    # Ensure we're connected to the right session BEFORE entering create_run()
-    # This must happen in the main request task, not in the background task
-    await client.ensure_session(session_id)
+        # Ensure session
+        with tracer.start_as_current_span("duckpond.ensure_session"):
+            await client.ensure_session(session_id)
 
-    # sid tracks the current session ID, may be updated when we get ResultMessage
-    sid = session_id
+        # sid tracks the current session ID, may be updated when we get ResultMessage
+        sid = session_id
 
-    # Build prompt - simple string if text-only, content list if multimodal
-    if has_images or len(sdk_content) > 1:
-        prompt: Any = sdk_content
-    else:
-        prompt = sdk_content[0]["text"] if sdk_content else ""
+        # Build prompt - simple string if text-only, content list if multimodal
+        if has_images or len(sdk_content) > 1:
+            prompt: Any = sdk_content
+        else:
+            prompt = sdk_content[0]["text"] if sdk_content else ""
 
-    async def run(controller: RunController) -> None:
-        """Stream Claude's response through the controller."""
-        nonlocal messages, sid
+        async def run(controller: RunController) -> None:
+            """Stream Claude's response through the controller."""
+            nonlocal messages, sid
 
-        print(f"[Duckpond] run() started, sid={sid}")
+            with tracer.start_as_current_span("duckpond.run") as run_span:
+                run_span.set_attribute("duckpond.session_id", sid[:8] if sid else "new")
 
-        # Add user message to state
-        messages.append({"role": "user", "content": ui_content})
+                # Add user message to state
+                messages.append({"role": "user", "content": ui_content})
 
-        # Update state with user message (use individual assignments, not update())
-        controller.state["messages"] = messages
-        controller.state["sessionId"] = sid
+                # Update state with user message
+                controller.state["messages"] = messages
+                controller.state["sessionId"] = sid
 
-        # Track assistant content as we receive it
-        assistant_content: list[dict[str, Any]] = []
+                # Track assistant content as we receive it
+                assistant_content: list[dict[str, Any]] = []
 
-        def send_progress_update():
-            """Send incremental state update so UI shows progress."""
-            # Build temporary messages list with current assistant content
-            temp_messages = list(messages)
-            if assistant_content:
-                temp_messages.append({
-                    "role": "assistant",
-                    "content": list(assistant_content),
-                })
-            controller.state["messages"] = temp_messages
-            controller.state["sessionId"] = sid
+                def send_progress_update():
+                    """Send incremental state update so UI shows progress."""
+                    temp_messages = list(messages)
+                    if assistant_content:
+                        temp_messages.append({
+                            "role": "assistant",
+                            "content": list(assistant_content),
+                        })
+                    controller.state["messages"] = temp_messages
+                    controller.state["sessionId"] = sid
 
-        try:
-            # Send to Claude (session already ensured before create_run)
-            await client.query(prompt, session_id=sid)
+                try:
+                    # Send to Claude
+                    with tracer.start_as_current_span("duckpond.query"):
+                        await client.query(prompt, session_id=sid)
 
-            # Stream response
-            async for message in client.receive_response():
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            # Stream text
-                            print(f"[Duckpond] TextBlock: {len(block.text)} chars: {block.text[:80]!r}...")
-                            controller.append_text(block.text)
-                            # Track in assistant content
-                            if assistant_content and assistant_content[-1].get("type") == "text":
-                                assistant_content[-1]["text"] += block.text
-                            else:
-                                assistant_content.append({"type": "text", "text": block.text})
+                    # Stream response
+                    with tracer.start_as_current_span("duckpond.stream") as stream_span:
+                        first_message = True
+                        async for message in client.receive_response():
+                            if first_message:
+                                stream_span.add_event("first_message_received")
+                                first_message = False
 
-                        elif isinstance(block, ToolUseBlock):
-                            # Tool call - create controller, set args, close
-                            print(f"[Duckpond] ToolUseBlock: name={block.name}, id={block.id}, input={block.input}")
-                            tool_ctrl = await controller.add_tool_call(
-                                tool_name=block.name,
-                                tool_call_id=block.id,
-                            )
-                            tool_ctrl.append_args_text(json.dumps(block.input))
-                            tool_ctrl.close()
+                            if isinstance(message, AssistantMessage):
+                                for block in message.content:
+                                    if isinstance(block, TextBlock):
+                                        controller.append_text(block.text)
+                                        if assistant_content and assistant_content[-1].get("type") == "text":
+                                            assistant_content[-1]["text"] += block.text
+                                        else:
+                                            assistant_content.append({"type": "text", "text": block.text})
 
-                            assistant_content.append({
-                                "type": "tool-call",
-                                "toolCallId": block.id,
-                                "toolName": block.name,
-                                "args": block.input,
-                                "argsText": json.dumps(block.input),
-                            })
+                                    elif isinstance(block, ToolUseBlock):
+                                        logger.info(f"ToolUseBlock: name={block.name}")
+                                        tool_ctrl = await controller.add_tool_call(
+                                            tool_name=block.name,
+                                            tool_call_id=block.id,
+                                        )
+                                        tool_ctrl.append_args_text(json.dumps(block.input))
+                                        tool_ctrl.close()
 
-                    # Send progress update after each AssistantMessage
-                    send_progress_update()
+                                        assistant_content.append({
+                                            "type": "tool-call",
+                                            "toolCallId": block.id,
+                                            "toolName": block.name,
+                                            "args": block.input,
+                                            "argsText": json.dumps(block.input),
+                                        })
 
-                elif isinstance(message, UserMessage):
-                    # Tool results come back as UserMessage
-                    # NOTE: We don't call controller.add_tool_result() here because
-                    # the TypeScript version doesn't either - it just updates state
-                    if hasattr(message, "content"):
-                        content = message.content
-                        if isinstance(content, list):
-                            for block in content:
-                                if isinstance(block, ToolResultBlock):
-                                    print(f"[Duckpond] ToolResultBlock: tool_use_id={block.tool_use_id}, content={str(block.content)[:100]}")
-                                    # Update assistant content with result (matching TS behavior)
-                                    for item in assistant_content:
-                                        if (item.get("type") == "tool-call" and
-                                            item.get("toolCallId") == block.tool_use_id):
-                                            item["result"] = block.content
-                                            item["isError"] = block.is_error or False
+                                send_progress_update()
 
-                    # Send progress update after tool results
-                    send_progress_update()
+                            elif isinstance(message, UserMessage):
+                                if hasattr(message, "content"):
+                                    content = message.content
+                                    if isinstance(content, list):
+                                        for block in content:
+                                            if isinstance(block, ToolResultBlock):
+                                                for item in assistant_content:
+                                                    if (item.get("type") == "tool-call" and
+                                                        item.get("toolCallId") == block.tool_use_id):
+                                                        item["result"] = block.content
+                                                        item["isError"] = block.is_error or False
 
-                elif isinstance(message, ResultMessage):
-                    # Final result - update session ID
-                    sid = message.session_id
-                    print(f"[Duckpond] Result: session_id={sid[:8]}...")
+                                send_progress_update()
 
-            # Add assistant message to state
-            if assistant_content:
-                messages.append({"role": "assistant", "content": assistant_content})
+                            elif isinstance(message, ResultMessage):
+                                sid = message.session_id
+                                logger.info(f"ResultMessage: session_id={sid[:8]}...")
 
-            # Final state update
-            controller.state["messages"] = messages
-            controller.state["sessionId"] = sid
-            print(f"[Duckpond] run() completed successfully, final sid={sid}")
+                    # Add assistant message to state
+                    if assistant_content:
+                        messages.append({"role": "assistant", "content": assistant_content})
 
-        except Exception as e:
-            import traceback
-            print(f"[Duckpond] Chat error: {e}")
-            traceback.print_exc()
-            controller.add_error(str(e))
+                    # Final state update
+                    controller.state["messages"] = messages
+                    controller.state["sessionId"] = sid
 
-    # Create stream and return response
-    initial_state = {
-        "messages": messages,
-        "sessionId": sid,
-    }
-    stream = create_run(run, state=initial_state)
-    return DataStreamResponse(stream)
+                except Exception as e:
+                    logger.exception(f"Chat error: {e}")
+                    controller.add_error(str(e))
+
+        # Create stream and return response
+        with tracer.start_as_current_span("duckpond.create_run"):
+            initial_state = {
+                "messages": messages,
+                "sessionId": sid,
+            }
+            stream = create_run(run, state=initial_state)
+
+        return DataStreamResponse(stream)
 
 
 @router.post("/api/chat/interrupt")
@@ -227,8 +232,8 @@ async def interrupt() -> dict[str, str]:
     """
     try:
         await client.interrupt()
-        print("[Duckpond] Interrupted")
+        logger.info("Interrupted")
         return {"status": "interrupted"}
     except Exception as e:
-        print(f"[Duckpond] Interrupt error: {e}")
+        logger.exception(f"Interrupt error: {e}")
         return {"status": "error", "message": str(e)}

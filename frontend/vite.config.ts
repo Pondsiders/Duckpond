@@ -45,6 +45,9 @@ export default defineConfig({
     port: 8766,
     host: '0.0.0.0',
     https: getCertConfig(),
+    // Disable HMR for stability during instrumentation/debugging
+    // Remove this line to re-enable hot module replacement
+    hmr: false,
     proxy: {
       '/api': {
         target: 'http://localhost:8765',

@@ -13,10 +13,15 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from pondside.telemetry import init
+
 from duckpond.client import client
 from duckpond.routes.chat import router as chat_router
 from duckpond.routes.sessions import router as sessions_router
 from duckpond.routes.context import router as context_router
+
+# Initialize telemetry - must be done before anything else
+init("duckpond")
 
 
 @asynccontextmanager
