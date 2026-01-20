@@ -4,6 +4,10 @@ import tailwindcss from '@tailwindcss/vite'
 import fs from 'fs'
 import { execSync } from 'child_process'
 
+// Configurable ports via environment variables (for dev worktree)
+const FRONTEND_PORT = parseInt(process.env.VITE_PORT || '8768', 10)
+const BACKEND_PORT = parseInt(process.env.VITE_BACKEND_PORT || '8767', 10)
+
 // Get Tailscale FQDN (e.g., "primer.tail8bd569.ts.net")
 const getTailscaleHostname = (): string | null => {
   try {
@@ -42,15 +46,13 @@ const getCertConfig = () => {
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    port: 8766,
+    port: FRONTEND_PORT,
     host: '0.0.0.0',
     https: getCertConfig(),
-    // Disable HMR for stability during instrumentation/debugging
-    // Remove this line to re-enable hot module replacement
-    hmr: false,
+    // HMR enabled in dev worktree - we want fast iteration here!
     proxy: {
       '/api': {
-        target: 'http://localhost:8765',
+        target: `http://localhost:${BACKEND_PORT}`,
         changeOrigin: true,
       },
     },

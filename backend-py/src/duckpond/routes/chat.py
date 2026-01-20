@@ -1,19 +1,19 @@
 """Chat route - the main conversation endpoint.
 
-POST /api/chat handles sending messages and streaming responses
-via the assistant-stream protocol.
+REFACTORED: Now uses simple SSE (Server-Sent Events) instead of assistant-stream.
+Frontend sends minimal payload { sessionId, content }, we stream back events.
 
+POST /api/chat handles sending messages and streaming responses.
 POST /api/chat/interrupt stops the current operation.
 """
 
 import json
 import logging
-from typing import Any
+from typing import Any, AsyncGenerator
 
 import orjson
 from fastapi import APIRouter, Request
-from assistant_stream import create_run, RunController
-from assistant_stream.serialization import DataStreamResponse
+from fastapi.responses import StreamingResponse
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -34,194 +34,123 @@ tracer = get_tracer()
 router = APIRouter()
 
 
-def extract_user_message(body: dict[str, Any]) -> tuple[Any, list[dict], bool, str | None]:
-    """Extract user message content from assistant-ui request format.
+async def stream_sse_events(content: str, session_id: str | None) -> AsyncGenerator[str, None]:
+    """Stream Claude's response as SSE events.
 
-    Returns:
-        tuple of (sdk_content, ui_content, has_images, session_id)
-        - sdk_content: Content formatted for Claude SDK (list of content blocks)
-        - ui_content: Content for UI state tracking
-        - has_images: Whether the message contains images
-        - session_id: Session ID from state, if present
+    Event types:
+    - text: { type: "text", data: "..." }
+    - tool-call: { type: "tool-call", data: { toolCallId, toolName, args, argsText } }
+    - tool-result: { type: "tool-result", data: { toolCallId, result, isError } }
+    - session-id: { type: "session-id", data: "..." }
+    - error: { type: "error", data: "..." }
+    - done: data: [DONE]
     """
-    commands = body.get("commands", [])
-    state = body.get("state", {})
-    session_id = state.get("sessionId")
+    sid = session_id
 
-    sdk_content: list[dict[str, Any]] = []
-    ui_content: list[dict[str, Any]] = []
-    has_images = False
+    with tracer.start_as_current_span("duckpond.stream_response") as span:
+        span.set_attribute("duckpond.session_id", sid[:8] if sid else "new")
 
-    for cmd in commands:
-        if cmd.get("type") == "add-message" and cmd.get("message"):
-            parts = cmd["message"].get("parts") or cmd["message"].get("content") or []
+        try:
+            # Ensure session exists
+            await client.ensure_session(sid)
 
-            for part in parts:
-                if part.get("type") == "text":
-                    text = (part.get("text") or "").strip()
-                    if text:
-                        sdk_content.append({"type": "text", "text": text})
-                        ui_content.append({"type": "text", "text": text})
+            # Send query to Claude
+            with tracer.start_as_current_span("duckpond.query"):
+                await client.query(content, session_id=sid)
 
-                elif part.get("type") == "image" and part.get("image"):
-                    image_data = part["image"]
-                    ui_content.append({"type": "image", "image": image_data})
-                    has_images = True
+            # Stream response
+            with tracer.start_as_current_span("duckpond.stream"):
+                async for message in client.receive_response():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                # Text content
+                                event = {"type": "text", "data": block.text}
+                                yield f"data: {json.dumps(event)}\n\n"
 
-                    # Convert data URL to Claude API format
-                    if image_data.startswith("data:"):
-                        # Parse data URL: data:image/png;base64,ABC123...
-                        header, data = image_data.split(",", 1)
-                        media_type = header.split(":")[1].split(";")[0]
-                        sdk_content.append({
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": data,
-                            }
-                        })
+                            elif isinstance(block, ToolUseBlock):
+                                # Tool call
+                                event = {
+                                    "type": "tool-call",
+                                    "data": {
+                                        "type": "tool-call",
+                                        "toolCallId": block.id,
+                                        "toolName": block.name,
+                                        "args": block.input,
+                                        "argsText": json.dumps(block.input),
+                                    }
+                                }
+                                yield f"data: {json.dumps(event)}\n\n"
 
-    return sdk_content, ui_content, has_images, session_id
+                    elif isinstance(message, UserMessage):
+                        # Tool results come through as UserMessage with ToolResultBlock
+                        if hasattr(message, "content"):
+                            content_blocks = message.content
+                            if isinstance(content_blocks, list):
+                                for block in content_blocks:
+                                    if isinstance(block, ToolResultBlock):
+                                        event = {
+                                            "type": "tool-result",
+                                            "data": {
+                                                "toolCallId": block.tool_use_id,
+                                                "result": block.content,
+                                                "isError": block.is_error or False,
+                                            }
+                                        }
+                                        yield f"data: {json.dumps(event)}\n\n"
+
+                    elif isinstance(message, ResultMessage):
+                        # Final message with session ID
+                        sid = message.session_id
+                        event = {"type": "session-id", "data": sid}
+                        yield f"data: {json.dumps(event)}\n\n"
+                        logger.info(f"ResultMessage: session_id={sid[:8]}...")
+
+            # Done
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.exception(f"Stream error: {e}")
+            event = {"type": "error", "data": str(e)}
+            yield f"data: {json.dumps(event)}\n\n"
+            yield "data: [DONE]\n\n"
 
 
 @router.post("/api/chat")
-async def chat(request: Request) -> DataStreamResponse:
-    """Handle chat messages and stream responses."""
+async def chat(request: Request) -> StreamingResponse:
+    """Handle chat messages and stream responses via SSE.
+
+    Request body (new minimal format):
+    {
+        "sessionId": "optional-session-id",
+        "content": "user message text"
+    }
+
+    Response: Server-Sent Events stream
+    """
     with tracer.start_as_current_span("duckpond.chat") as chat_span:
-        # Parse request (using orjson for speed on large payloads)
+        # Parse request - now much simpler!
         with tracer.start_as_current_span("duckpond.parse_request"):
             raw_body = await request.body()
             body = orjson.loads(raw_body)
-            sdk_content, ui_content, has_images, session_id = extract_user_message(body)
-            state = body.get("state", {})
-            messages = state.get("messages", [])
 
-        chat_span.set_attribute("duckpond.message_count", len(messages))
-        chat_span.set_attribute("duckpond.has_images", has_images)
-        logger.info(f"chat request: sessionId={session_id[:8] if session_id else 'new'}..., messages={len(messages)}")
+            # New format: { sessionId, content }
+            session_id = body.get("sessionId")
+            content = body.get("content", "")
 
-        # Ensure session
-        with tracer.start_as_current_span("duckpond.ensure_session"):
-            await client.ensure_session(session_id)
+        chat_span.set_attribute("duckpond.content_length", len(content))
+        logger.info(f"chat request: sessionId={session_id[:8] if session_id else 'new'}..., content_len={len(content)}")
 
-        # sid tracks the current session ID, may be updated when we get ResultMessage
-        sid = session_id
-
-        # Build prompt - simple string if text-only, content list if multimodal
-        if has_images or len(sdk_content) > 1:
-            prompt: Any = sdk_content
-        else:
-            prompt = sdk_content[0]["text"] if sdk_content else ""
-
-        async def run(controller: RunController) -> None:
-            """Stream Claude's response through the controller."""
-            nonlocal messages, sid
-
-            with tracer.start_as_current_span("duckpond.run") as run_span:
-                run_span.set_attribute("duckpond.session_id", sid[:8] if sid else "new")
-
-                # Add user message to state
-                messages.append({"role": "user", "content": ui_content})
-
-                # Update state with user message
-                controller.state["messages"] = messages
-                controller.state["sessionId"] = sid
-
-                # Track assistant content as we receive it
-                assistant_content: list[dict[str, Any]] = []
-
-                def send_progress_update():
-                    """Send incremental state update so UI shows progress."""
-                    temp_messages = list(messages)
-                    if assistant_content:
-                        temp_messages.append({
-                            "role": "assistant",
-                            "content": list(assistant_content),
-                        })
-                    controller.state["messages"] = temp_messages
-                    controller.state["sessionId"] = sid
-
-                try:
-                    # Send to Claude
-                    with tracer.start_as_current_span("duckpond.query"):
-                        await client.query(prompt, session_id=sid)
-
-                    # Stream response
-                    with tracer.start_as_current_span("duckpond.stream") as stream_span:
-                        first_message = True
-                        async for message in client.receive_response():
-                            if first_message:
-                                stream_span.add_event("first_message_received")
-                                first_message = False
-
-                            if isinstance(message, AssistantMessage):
-                                for block in message.content:
-                                    if isinstance(block, TextBlock):
-                                        controller.append_text(block.text)
-                                        if assistant_content and assistant_content[-1].get("type") == "text":
-                                            assistant_content[-1]["text"] += block.text
-                                        else:
-                                            assistant_content.append({"type": "text", "text": block.text})
-
-                                    elif isinstance(block, ToolUseBlock):
-                                        logger.info(f"ToolUseBlock: name={block.name}")
-                                        tool_ctrl = await controller.add_tool_call(
-                                            tool_name=block.name,
-                                            tool_call_id=block.id,
-                                        )
-                                        tool_ctrl.append_args_text(json.dumps(block.input))
-                                        tool_ctrl.close()
-
-                                        assistant_content.append({
-                                            "type": "tool-call",
-                                            "toolCallId": block.id,
-                                            "toolName": block.name,
-                                            "args": block.input,
-                                            "argsText": json.dumps(block.input),
-                                        })
-
-                                send_progress_update()
-
-                            elif isinstance(message, UserMessage):
-                                if hasattr(message, "content"):
-                                    content = message.content
-                                    if isinstance(content, list):
-                                        for block in content:
-                                            if isinstance(block, ToolResultBlock):
-                                                for item in assistant_content:
-                                                    if (item.get("type") == "tool-call" and
-                                                        item.get("toolCallId") == block.tool_use_id):
-                                                        item["result"] = block.content
-                                                        item["isError"] = block.is_error or False
-
-                                send_progress_update()
-
-                            elif isinstance(message, ResultMessage):
-                                sid = message.session_id
-                                logger.info(f"ResultMessage: session_id={sid[:8]}...")
-
-                    # Add assistant message to state
-                    if assistant_content:
-                        messages.append({"role": "assistant", "content": assistant_content})
-
-                    # Final state update
-                    controller.state["messages"] = messages
-                    controller.state["sessionId"] = sid
-
-                except Exception as e:
-                    logger.exception(f"Chat error: {e}")
-                    controller.add_error(str(e))
-
-        # Create stream and return response
-        with tracer.start_as_current_span("duckpond.create_run"):
-            initial_state = {
-                "messages": messages,
-                "sessionId": sid,
+        # Return SSE stream
+        return StreamingResponse(
+            stream_sse_events(content, session_id),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Disable nginx buffering
             }
-            stream = create_run(run, state=initial_state)
-
-        return DataStreamResponse(stream)
+        )
 
 
 @router.post("/api/chat/interrupt")

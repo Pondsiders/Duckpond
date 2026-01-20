@@ -1,27 +1,34 @@
 #!/bin/bash
-# Launch Duckpond (Python backend + Node frontend)
+# Launch Duckpond DEV (Python backend + Node frontend)
+# This is the experimental worktree - runs on different ports than main
 
 set -e
-cd /Pondside/Barn/Duckpond
+cd /Pondside/Barn/Duckpond-dev
+
+# Dev ports: 8767 (backend), 8768 (frontend)
+BACKEND_PORT=8767
+FRONTEND_PORT=8768
 
 # Figure out what URL to advertise
 CERT_DIR="/Pondside/Basement/Files/certs"
 TAILSCALE_HOST=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null)
 
 if [[ -n "$TAILSCALE_HOST" && -f "$CERT_DIR/$TAILSCALE_HOST.crt" ]]; then
-    FRONTEND_URL="https://${TAILSCALE_HOST}:8766"
+    FRONTEND_URL="https://${TAILSCALE_HOST}:${FRONTEND_PORT}"
 else
-    FRONTEND_URL="http://localhost:8766"
+    FRONTEND_URL="http://localhost:${FRONTEND_PORT}"
 fi
 
-echo "🦆 Starting Duckpond..."
-echo "   Backend:  http://localhost:8765 (Python)"
+echo "🧪 Starting Duckpond DEV (experimental)..."
+echo "   Backend:  http://localhost:${BACKEND_PORT} (Python)"
 echo "   Frontend: $FRONTEND_URL"
+echo ""
+echo "   Main Duckpond remains on :8765/:8766"
 echo ""
 
 npx concurrently \
     --names "backend,frontend" \
-    --prefix-colors "blue,green" \
+    --prefix-colors "magenta,cyan" \
     --kill-others \
-    "cd backend-py && uv run uvicorn duckpond.main:app --host 0.0.0.0 --port 8765" \
-    "cd frontend && npm run dev"
+    "cd backend-py && uv run uvicorn duckpond.main:app --host 0.0.0.0 --port ${BACKEND_PORT}" \
+    "cd frontend && VITE_PORT=${FRONTEND_PORT} VITE_BACKEND_PORT=${BACKEND_PORT} npm run dev"

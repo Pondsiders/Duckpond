@@ -24,7 +24,7 @@ export const MarkdownText: FC<MarkdownTextProps> = ({ text, fontScale = 1.25 }) 
         li: ({ children }) => (
           <li className="mb-1">{children}</li>
         ),
-        code: ({ children, className, node, ...props }) => {
+        code: ({ children, className }) => {
           // Check if this code is inside a <pre> (i.e., it's a code block, not inline)
           const isInline = !className && typeof children === 'string' && !children.includes('\n');
 

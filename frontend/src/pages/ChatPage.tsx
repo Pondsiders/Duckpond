@@ -1,21 +1,22 @@
 /**
  * ChatPage — The main conversation view.
  *
- * Built on assistant-ui primitives following the official Claude example.
- * Backend streams state via assistant-stream; we just render it.
+ * Uses Zustand for state management and useExternalStoreRuntime to bridge
+ * to assistant-ui primitives. State lives in the store, not in React state.
  */
 
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { ArrowUp, Square } from "lucide-react";
 import { ContextMeter } from "../components/ContextMeter";
+import { ToolFallback } from "../components/ToolFallback";
 import {
   ComposerAttachments,
   ComposerAddAttachment,
   UserMessageAttachments,
 } from "../components/Attachment";
 import {
-  useAssistantTransportRuntime,
+  useExternalStoreRuntime,
   AssistantRuntimeProvider,
   ThreadPrimitive,
   ComposerPrimitive,
@@ -23,248 +24,62 @@ import {
   AssistantIf,
   SimpleImageAttachmentAdapter,
 } from "@assistant-ui/react";
-import type {
-  AssistantTransportConnectionMetadata,
-  ToolCallMessagePartComponent,
-} from "@assistant-ui/react";
+import type { ThreadMessageLike, AppendMessage } from "@assistant-ui/react";
 import { MarkdownText } from "../components/MarkdownText";
+import {
+  useGazeboStore,
+  type Message,
+  type JSONValue,
+  type ToolCallPart,
+} from "../store";
 
 // Font scale for 125% sizing
 const fontScale = 1.25;
 
 // -----------------------------------------------------------------------------
-// Types
+// SSE Stream Reader
 // -----------------------------------------------------------------------------
 
-// JSON value types (matching assistant-ui's expectations)
-type JSONValue = string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
-type JSONObject = { [key: string]: JSONValue };
-
-// Backend content part format (what the agent sends)
-type BackendTextPart = { type: "text"; text: string };
-type BackendToolCallPart = {
-  type: "tool-call";
-  toolCallId: string;
-  toolName: string;
-  args: JSONObject;
-  argsText: string;
-  result?: JSONValue;
-  isError?: boolean;
-};
-type BackendContentPart = BackendTextPart | BackendToolCallPart;
-type BackendMessageContent = string | BackendContentPart[];
-
-type AgentState = {
-  messages: Array<{
-    role: string;
-    content: BackendMessageContent;
-    uuid?: string;
-    timestamp?: string;
-  }>;
-  sessionId: string | null;
-};
-
-// -----------------------------------------------------------------------------
-// Converter: Agent state → assistant-ui format
-// -----------------------------------------------------------------------------
-
-// Helper to normalize content to array of parts
-function normalizeContent(content: BackendMessageContent): BackendContentPart[] {
-  if (!content) return [];
-  if (typeof content === "string") {
-    return [{ type: "text", text: content }];
-  }
-  if (!Array.isArray(content)) {
-    console.warn("[Duckpond] Unexpected content type:", typeof content, content);
-    return [];
-  }
-  return content;
+interface StreamEvent {
+  type: "text" | "tool-call" | "tool-result" | "session-id" | "done" | "error";
+  data: unknown;
 }
 
-// Converter: transform our state -> assistant-ui format
-// Uses padded index-based IDs (msg-000000) to ensure correct sort order.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const converter = (state: AgentState, meta: AssistantTransportConnectionMetadata): any => {
-  // Defensive: filter out malformed messages
-  const validMessages = (state.messages || []).filter((m) => m && m.role);
+async function* readSSEStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>
+): AsyncGenerator<StreamEvent> {
+  const decoder = new TextDecoder();
+  let buffer = "";
 
-  return {
-    messages: validMessages.map((m, i) => {
-      // Padded index ensures correct sort order in assistant-ui
-      const id = `msg-${String(i).padStart(6, "0")}`;
-      const baseMetadata = {
-        unstable_state: null,
-        unstable_annotations: [],
-        unstable_data: [],
-        steps: [],
-        custom: {},
-      };
-      const contentParts = normalizeContent(m.content);
-
-      // Extract image parts as attachments for MessagePrimitive.Attachments
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const attachments = contentParts
-        .filter((p): p is { type: "image"; image: string } =>
-          p.type === "image" && "image" in p
-        )
-        .map((p, idx) => ({
-          id: `${id}-attachment-${idx}`,
-          type: "image" as const,
-          name: `image-${idx}.png`,
-          content: [{ type: "image" as const, image: p.image }],
-          status: { type: "complete" as const },
-        }));
-
-      // Filter out image parts from content (they're in attachments now)
-      const textContent = contentParts.filter((p) => p.type !== "image");
-
-      if (m.role === "user") {
-        return {
-          id,
-          createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
-          role: "user" as const,
-          content: textContent,
-          attachments,
-          metadata: baseMetadata,
-        };
-      } else {
-        return {
-          id,
-          createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
-          role: "assistant" as const,
-          content: contentParts,
-          status:
-            meta.isSending && i === validMessages.length - 1
-              ? { type: "running" as const }
-              : { type: "complete" as const, reason: "stop" as const },
-          metadata: baseMetadata,
-        };
-      }
-    }),
-    isRunning: meta.isSending,
-  };
-};
-
-// -----------------------------------------------------------------------------
-// Tool Fallback Component (matches assistant-ui interface)
-// -----------------------------------------------------------------------------
-
-const ToolFallback: ToolCallMessagePartComponent = ({
-  toolName,
-  argsText,
-  result,
-  status,
-}) => {
-  const [expanded, setExpanded] = useState(false);
-
-  const safeName = toolName || "Unknown Tool";
-  const displayName = safeName.charAt(0).toUpperCase() + safeName.slice(1);
-
-  const isRunning = status?.type === "running";
-  const isError =
-    status?.type === "incomplete" && status.reason === "error";
-
-  // Parse args for summary
-  let args: Record<string, unknown> = {};
   try {
-    args = argsText ? JSON.parse(argsText) : {};
-  } catch {
-    // argsText might not be valid JSON
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const data = line.slice(6);
+          if (data === "[DONE]") {
+            yield { type: "done", data: null };
+          } else {
+            try {
+              const parsed = JSON.parse(data);
+              yield parsed as StreamEvent;
+            } catch {
+              // Ignore malformed JSON
+            }
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
   }
-
-  // Get a summary of the args
-  const argSummary = (() => {
-    const entries = Object.entries(args);
-    if (entries.length === 0) return "";
-
-    if (safeName.toLowerCase() === "bash" && args.command) {
-      const cmd = String(args.command);
-      return cmd.length > 50 ? cmd.slice(0, 50) + "..." : cmd;
-    }
-    if (args.file_path) {
-      const path = String(args.file_path);
-      const parts = path.split("/");
-      return parts[parts.length - 1];
-    }
-    if (args.pattern) {
-      return String(args.pattern);
-    }
-
-    const firstString = entries.find(([, v]) => typeof v === "string");
-    if (firstString) {
-      const val = String(firstString[1]);
-      return val.length > 40 ? val.slice(0, 40) + "..." : val;
-    }
-
-    return `${entries.length} args`;
-  })();
-
-  // Status dot color (dynamic)
-  const statusColor = isRunning
-    ? "bg-primary"
-    : isError
-    ? "bg-error"
-    : "bg-success";
-
-  return (
-    <div className="mb-3 rounded-lg border border-border bg-surface overflow-hidden">
-      {/* Header */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2.5 bg-transparent border-none cursor-pointer text-text font-mono text-[13px] text-left"
-      >
-        {/* Status indicator */}
-        <span
-          className={`w-2 h-2 rounded-full ${statusColor} ${isRunning ? "animate-pulse-dot" : ""}`}
-        />
-
-        {/* Tool name */}
-        <span className="text-primary font-semibold">
-          {displayName}
-        </span>
-
-        {/* Arg summary */}
-        {argSummary && (
-          <span className="text-muted flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
-            {argSummary}
-          </span>
-        )}
-
-        {/* Expand indicator */}
-        <span className="text-muted text-[10px]">
-          {expanded ? "▼" : "▶"}
-        </span>
-      </button>
-
-      {/* Expanded content */}
-      {expanded && (
-        <div className="border-t border-border p-3">
-          <div className={result !== undefined ? "mb-3" : ""}>
-            <div className="text-muted text-[11px] mb-1 font-mono">
-              INPUT
-            </div>
-            <pre className="m-0 p-2 bg-code-bg rounded text-xs font-mono text-text overflow-auto max-h-[200px]">
-              {argsText || "{}"}
-            </pre>
-          </div>
-
-          {result !== undefined && (
-            <div>
-              <div className="text-muted text-[11px] mb-1 font-mono">
-                OUTPUT
-              </div>
-              <pre className="m-0 p-2 bg-code-bg rounded text-xs font-mono text-text overflow-auto max-h-[300px]">
-                {typeof result === "string"
-                  ? result
-                  : JSON.stringify(result, null, 2)}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
+}
 
 // -----------------------------------------------------------------------------
 // Message Components (using MessagePrimitive)
@@ -306,16 +121,41 @@ const AssistantMessage = () => {
 };
 
 // -----------------------------------------------------------------------------
-// Thread View
+// Convert our Message to ThreadMessageLike
 // -----------------------------------------------------------------------------
 
-function ThreadView({ initialState }: { initialState: AgentState }) {
-  // Track accurate token count from Eavesdrop (via /api/context endpoint)
-  const [inputTokens, setInputTokens] = useState<number | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(initialState.sessionId);
-  const [messageCount, setMessageCount] = useState(initialState.messages.length);
+const convertMessage = (message: Message): ThreadMessageLike => {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    createdAt: message.createdAt,
+  };
+};
 
-  // Fetch token count when session ID is available or messages change
+// -----------------------------------------------------------------------------
+// Thread View (External Store Runtime)
+// -----------------------------------------------------------------------------
+
+function ThreadView() {
+  // === ZUSTAND STATE ===
+  const messages = useGazeboStore((s) => s.messages);
+  const isRunning = useGazeboStore((s) => s.isRunning);
+  const sessionId = useGazeboStore((s) => s.sessionId);
+  const inputTokens = useGazeboStore((s) => s.inputTokens);
+
+  // === ZUSTAND ACTIONS ===
+  const addUserMessage = useGazeboStore((s) => s.addUserMessage);
+  const addAssistantPlaceholder = useGazeboStore((s) => s.addAssistantPlaceholder);
+  const appendToAssistant = useGazeboStore((s) => s.appendToAssistant);
+  const addToolCall = useGazeboStore((s) => s.addToolCall);
+  const updateToolResult = useGazeboStore((s) => s.updateToolResult);
+  const setMessages = useGazeboStore((s) => s.setMessages);
+  const setSessionId = useGazeboStore((s) => s.setSessionId);
+  const setRunning = useGazeboStore((s) => s.setRunning);
+  const setInputTokens = useGazeboStore((s) => s.setInputTokens);
+
+  // Fetch token count when session changes or messages update
   useEffect(() => {
     if (!sessionId) return;
 
@@ -333,33 +173,120 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
       }
     };
 
-    // Delay to let Eavesdrop count tokens (~500-600ms) and stash in Redis
+    // Delay to let the backend count tokens
     const timer = setTimeout(fetchTokenCount, 1000);
     return () => clearTimeout(timer);
-  }, [sessionId, messageCount]);
+  }, [sessionId, messages.length, setInputTokens]);
 
-  // Converter that captures sessionId updates and tracks message count
-  const converterWithTracking = useCallback(
-    (state: AgentState, meta: AssistantTransportConnectionMetadata) => {
-      // Capture sessionId when it appears
-      if (state.sessionId && state.sessionId !== sessionId) {
-        setTimeout(() => setSessionId(state.sessionId), 0);
+  // === onNew: Handle new user messages ===
+  const onNew = useCallback(
+    async (appendMessage: AppendMessage) => {
+      // Extract text content from the message
+      const textParts = appendMessage.content.filter(
+        (p): p is { type: "text"; text: string } => p.type === "text"
+      );
+      const text = textParts.map((p) => p.text).join("\n");
+
+      if (!text.trim()) return;
+
+      // 1. Add user message to store immediately (optimistic)
+      addUserMessage(text);
+
+      // 2. Create placeholder for assistant response
+      const assistantId = addAssistantPlaceholder();
+      setRunning(true);
+
+      try {
+        // 3. Call backend with minimal payload
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId,
+            content: text,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
+        }
+
+        // 4. Stream response
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error("No response body");
+        }
+
+        for await (const event of readSSEStream(reader)) {
+          switch (event.type) {
+            case "text":
+              appendToAssistant(assistantId, event.data as string);
+              break;
+
+            case "tool-call": {
+              const tc = event.data as ToolCallPart;
+              addToolCall(assistantId, {
+                toolCallId: tc.toolCallId,
+                toolName: tc.toolName,
+                args: tc.args,
+                argsText: tc.argsText,
+              });
+              break;
+            }
+
+            case "tool-result": {
+              const { toolCallId, result, isError } = event.data as {
+                toolCallId: string;
+                result: JSONValue;
+                isError?: boolean;
+              };
+              updateToolResult(assistantId, toolCallId, result, isError);
+              break;
+            }
+
+            case "session-id":
+              setSessionId(event.data as string);
+              break;
+
+            case "error":
+              console.error("[Duckpond] Stream error:", event.data);
+              break;
+
+            case "done":
+              // Stream complete
+              break;
+          }
+        }
+      } catch (error) {
+        console.error("[Duckpond] Chat error:", error);
+        // Update placeholder with error message
+        appendToAssistant(
+          assistantId,
+          `Error: ${error instanceof Error ? error.message : "Unknown error"}`
+        );
+      } finally {
+        setRunning(false);
       }
-      // Track message count to trigger token count refresh
-      const newLength = (state.messages || []).length;
-      if (newLength !== messageCount) {
-        setTimeout(() => setMessageCount(newLength), 0);
-      }
-      return converter(state, meta);
     },
-    [sessionId, messageCount]
+    [
+      sessionId,
+      addUserMessage,
+      addAssistantPlaceholder,
+      appendToAssistant,
+      addToolCall,
+      updateToolResult,
+      setSessionId,
+      setRunning,
+    ]
   );
 
-  const runtime = useAssistantTransportRuntime({
-    api: "/api/chat",
-    headers: {},
-    initialState,
-    converter: converterWithTracking,
+  // === RUNTIME ===
+  const runtime = useExternalStoreRuntime({
+    messages,
+    setMessages,
+    isRunning,
+    onNew,
+    convertMessage,
     adapters: {
       attachments: new SimpleImageAttachmentAdapter(),
     },
@@ -472,22 +399,34 @@ function ThreadView({ initialState }: { initialState: AgentState }) {
 export default function ChatPage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
-  const [initialState, setInitialState] = useState<AgentState | null>(null);
+  const loadSession = useGazeboStore((s) => s.loadSession);
+  const reset = useGazeboStore((s) => s.reset);
+
+  // Load state
   const [loading, setLoading] = useState(!!sessionId);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (sessionId) {
+      // Load existing session
       fetch(`/api/sessions/${sessionId}`)
         .then((r) => {
           if (!r.ok) throw new Error(`Session not found`);
           return r.json();
         })
         .then((data) => {
-          setInitialState({
-            messages: data.messages,
-            sessionId: sessionId,
-          });
+          // Convert backend messages to our format
+          const messages: Message[] = (data.messages || []).map(
+            (m: { role: string; content: unknown }, i: number) => ({
+              id: `loaded-${i}`,
+              role: m.role as "user" | "assistant",
+              content: Array.isArray(m.content)
+                ? m.content
+                : [{ type: "text", text: String(m.content) }],
+              createdAt: new Date(),
+            })
+          );
+          loadSession(sessionId, messages);
           setLoading(false);
         })
         .catch((err) => {
@@ -495,9 +434,11 @@ export default function ChatPage() {
           setLoading(false);
         });
     } else {
-      setInitialState({ messages: [], sessionId: null });
+      // New session - reset store
+      reset();
+      setLoading(false);
     }
-  }, [sessionId]);
+  }, [sessionId, loadSession, reset]);
 
   if (loading) {
     return (
@@ -510,9 +451,7 @@ export default function ChatPage() {
   if (error) {
     return (
       <div className="h-screen flex flex-col items-center justify-center bg-background gap-4">
-        <div className="text-primary font-serif">
-          {error}
-        </div>
+        <div className="text-primary font-serif">{error}</div>
         <button
           onClick={() => navigate("/")}
           className="px-6 py-3 bg-composer border border-border rounded-lg text-text cursor-pointer font-serif"
@@ -523,9 +462,5 @@ export default function ChatPage() {
     );
   }
 
-  if (!initialState) {
-    return null;
-  }
-
-  return <ThreadView initialState={initialState} />;
+  return <ThreadView />;
 }
