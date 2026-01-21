@@ -1,13 +1,11 @@
 #!/bin/bash
-# Launch Duckpond DEV (Python backend + Node frontend)
-# This is the experimental worktree - runs on different ports than main
+# Launch Duckpond (Python backend + Node frontend)
 
 set -e
-cd /Pondside/Barn/Duckpond-dev
+cd /Pondside/Barn/Duckpond
 
-# Dev ports: 8767 (backend), 8768 (frontend)
-BACKEND_PORT=8767
-FRONTEND_PORT=8768
+BACKEND_PORT=8765
+FRONTEND_PORT=8766
 
 # Figure out what URL to advertise
 CERT_DIR="/Pondside/Basement/Files/certs"
@@ -19,11 +17,9 @@ else
     FRONTEND_URL="http://localhost:${FRONTEND_PORT}"
 fi
 
-echo "🧪 Starting Duckpond DEV (experimental)..."
+echo "🧪 Starting Duckpond..."
 echo "   Backend:  http://localhost:${BACKEND_PORT} (Python)"
 echo "   Frontend: $FRONTEND_URL"
-echo ""
-echo "   Main Duckpond remains on :8765/:8766"
 echo ""
 
 npx concurrently \
