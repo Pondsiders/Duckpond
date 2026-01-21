@@ -90,7 +90,11 @@ Frontend owns state locally (Zustand). Backend is stateful (ClaudeSDKClient sing
 ### SDK Client Lifecycle
 **CANNOT recreate ClaudeSDKClient per turn.** Each instantiation involves warmup API calls that consume significant tokens. Recreating per-turn would blow our budget. The client MUST be reused across turns within a session.
 
-The bug we're fixing: after the first successful turn, `receive_response()` hangs on subsequent calls. We need to understand and fix this, not work around it.
+**How the SDK works:** When Claude Agent SDK initializes, it sends warmup prompts to Anthropic. This happens the first time the client is used, and ONLY the first time. On subsequent calls to `query()`, it does NOT re-issue those initialization calls because the client is already running. You can prove this by looking at LLM traces—if the warmup calls are absent on turns 2+, the client is being reused.
+
+**The proof:** Main Duckpond successfully reuses the SDK client for hundreds of turns. This is confirmed by LLM traces showing no warmup calls after turn 1. Claude Code itself (the bundled CLI that powers conversations) also reuses its client across turns.
+
+**The mystery:** Gazebo fails on turn 3. The client code is identical to main Duckpond. Something else is different. We don't know what yet.
 
 ### No State Round-Tripping
 The whole point of Gazebo is to NOT ship 700 messages on every request. The frontend owns state locally. The backend streams updates. State does not round-trip.
@@ -220,9 +224,10 @@ These are battle-tested from Duckpond v1:
 | ToolFallback | Currently in ChatPage | Collapsible tool UI |
 | index.css | `frontend/src/` | Styling/theme |
 | client.py | `backend-py/src/duckpond/` | SDK client wrapper |
-| prompt.py | `backend-py/src/duckpond/` | System prompt assembly |
 | context.py | `backend-py/src/duckpond/routes/` | Token counts from Redis |
 | chat.py | `backend-py/src/duckpond/routes/` | Already streams SSE |
+
+**Note:** System prompt assembly is handled by the Loom, not Gazebo. The backend passes a minimal placeholder prompt that the Loom replaces with the full Alpha system prompt.
 
 ---
 

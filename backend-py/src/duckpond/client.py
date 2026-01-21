@@ -21,26 +21,15 @@ from claude_agent_sdk import (
     Message,
 )
 
-from duckpond.prompt import build_system_prompt, get_cached_machine_info
-
 
 def build_options(resume: str | None = None) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions with optional session resume.
 
-    The system prompt is assembled dynamically from:
-    - Eternal: system-prompt.md (the soul)
-    - Past: Capsule summaries (Postgres) + today so far (Redis)
-    - Present: Machine info + weather (Redis)
-    - Future: Calendar + todos (Redis)
+    System prompt assembly is handled by the Loom, not here.
+    We pass a minimal placeholder that the Loom will replace.
     """
-    # Build dynamic system prompt with cached machine info
-    machine_info = get_cached_machine_info()
-    system_prompt = build_system_prompt(machine_info)
-
-    print(f"[Duckpond] Built system prompt: {len(system_prompt)} chars")
-
     return ClaudeAgentOptions(
-        system_prompt=system_prompt,
+        system_prompt="You are Claude, a helpful assistant.",  # Loom replaces this
         allowed_tools=[
             "Read", "Write", "Edit", "Glob", "Grep", "Bash",
             "WebFetch", "WebSearch", "Task", "Skill",
@@ -51,9 +40,6 @@ def build_options(resume: str | None = None) -> ClaudeAgentOptions:
         setting_sources=["project"],
         resume=resume,
         include_partial_messages=True,
-        # Hooks are loaded from settings.json via setting_sources=["project"]
-        # The shared eavesdrop-metadata.py hook injects session ID for both
-        # Claude Code and Duckpond
     )
 
 

@@ -21,7 +21,8 @@ from duckpond.routes.sessions import router as sessions_router
 from duckpond.routes.context import router as context_router
 
 # Initialize telemetry - must be done before anything else
-init("duckpond")
+# "gazebo" distinguishes this from main Duckpond in traces
+init("gazebo")
 
 
 @asynccontextmanager

@@ -1,12 +1,15 @@
 """Chat route - the main conversation endpoint.
 
-REFACTORED: Now uses simple SSE (Server-Sent Events) instead of assistant-stream.
-Frontend sends minimal payload { sessionId, content }, we stream back events.
+EXPERIMENT: Using our own queue/task pattern instead of assistant-stream's create_run().
+Testing whether the background task pattern is what makes SDK client reuse work.
+
+Frontend sends minimal payload { sessionId, content }, we stream back SSE events.
 
 POST /api/chat handles sending messages and streaming responses.
 POST /api/chat/interrupt stops the current operation.
 """
 
+import asyncio
 import json
 import logging
 from typing import Any, AsyncGenerator
@@ -34,8 +37,11 @@ tracer = get_tracer()
 router = APIRouter()
 
 
-async def stream_sse_events(content: str, session_id: str | None) -> AsyncGenerator[str, None]:
+async def stream_sse_events(content: str | list[Any], session_id: str | None) -> AsyncGenerator[str, None]:
     """Stream Claude's response as SSE events.
+
+    Uses our own queue/task pattern: SDK calls run in a background task,
+    results flow through an asyncio.Queue, this generator reads from the queue.
 
     Event types:
     - text: { type: "text", data: "..." }
@@ -45,66 +51,92 @@ async def stream_sse_events(content: str, session_id: str | None) -> AsyncGenera
     - error: { type: "error", data: "..." }
     - done: data: [DONE]
     """
-    sid = session_id
+    # The queue connects the background task to the response generator
+    queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
-    with tracer.start_as_current_span("duckpond.stream_response") as span:
-        span.set_attribute("duckpond.session_id", sid[:8] if sid else "new")
+    async def run_sdk() -> None:
+        """Run the SDK interaction in a background task."""
+        sid = session_id
 
         try:
-            # Ensure session exists
-            await client.ensure_session(sid)
+            with tracer.start_as_current_span("gazebo.run") as span:
+                span.set_attribute("duckpond.session_id", sid[:8] if sid else "new")
 
-            # Send query to Claude
-            with tracer.start_as_current_span("duckpond.query"):
-                await client.query(content, session_id=sid)
+                # Ensure session exists
+                await client.ensure_session(sid)
 
-            # Stream response
-            with tracer.start_as_current_span("duckpond.stream"):
-                async for message in client.receive_response():
-                    if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock):
-                                # Text content
-                                event = {"type": "text", "data": block.text}
-                                yield f"data: {json.dumps(event)}\n\n"
+                # Send query to Claude
+                with tracer.start_as_current_span("gazebo.query"):
+                    logger.info("Sending query to Claude...")
+                    await client.query(content, session_id=sid)
+                    logger.info("Query sent, about to receive response...")
 
-                            elif isinstance(block, ToolUseBlock):
-                                # Tool call
-                                event = {
-                                    "type": "tool-call",
-                                    "data": {
+                # Stream response
+                with tracer.start_as_current_span("gazebo.stream"):
+                    async for message in client.receive_response():
+                        logger.debug(f"Received message: {type(message).__name__}")
+
+                        if isinstance(message, AssistantMessage):
+                            for block in message.content:
+                                if isinstance(block, TextBlock):
+                                    await queue.put({"type": "text", "data": block.text})
+
+                                elif isinstance(block, ToolUseBlock):
+                                    await queue.put({
                                         "type": "tool-call",
-                                        "toolCallId": block.id,
-                                        "toolName": block.name,
-                                        "args": block.input,
-                                        "argsText": json.dumps(block.input),
-                                    }
-                                }
-                                yield f"data: {json.dumps(event)}\n\n"
-
-                    elif isinstance(message, UserMessage):
-                        # Tool results come through as UserMessage with ToolResultBlock
-                        if hasattr(message, "content"):
-                            content_blocks = message.content
-                            if isinstance(content_blocks, list):
-                                for block in content_blocks:
-                                    if isinstance(block, ToolResultBlock):
-                                        event = {
-                                            "type": "tool-result",
-                                            "data": {
-                                                "toolCallId": block.tool_use_id,
-                                                "result": block.content,
-                                                "isError": block.is_error or False,
-                                            }
+                                        "data": {
+                                            "toolCallId": block.id,
+                                            "toolName": block.name,
+                                            "args": block.input,
+                                            "argsText": json.dumps(block.input),
                                         }
-                                        yield f"data: {json.dumps(event)}\n\n"
+                                    })
 
-                    elif isinstance(message, ResultMessage):
-                        # Final message with session ID
-                        sid = message.session_id
-                        event = {"type": "session-id", "data": sid}
-                        yield f"data: {json.dumps(event)}\n\n"
-                        logger.info(f"ResultMessage: session_id={sid[:8]}...")
+                        elif isinstance(message, UserMessage):
+                            # Tool results come through as UserMessage with ToolResultBlock
+                            if hasattr(message, "content"):
+                                content_blocks = message.content
+                                if isinstance(content_blocks, list):
+                                    for block in content_blocks:
+                                        if isinstance(block, ToolResultBlock):
+                                            await queue.put({
+                                                "type": "tool-result",
+                                                "data": {
+                                                    "toolCallId": block.tool_use_id,
+                                                    "result": block.content,
+                                                    "isError": block.is_error or False,
+                                                }
+                                            })
+
+                        elif isinstance(message, ResultMessage):
+                            # Capture final session ID
+                            sid = message.session_id
+                            client.update_session_id(sid)
+                            logger.info(f"ResultMessage: session_id={sid[:8]}...")
+                            await queue.put({"type": "session-id", "data": sid})
+
+        except Exception as e:
+            logger.exception(f"SDK error: {e}")
+            await queue.put({"type": "error", "data": str(e)})
+
+        finally:
+            # Signal end of stream
+            await queue.put(None)
+
+    with tracer.start_as_current_span("gazebo.stream_response") as span:
+        span.set_attribute("duckpond.session_id", session_id[:8] if session_id else "new")
+
+        # Start the SDK interaction as a background task
+        task = asyncio.create_task(run_sdk())
+
+        try:
+            # Read from queue and yield SSE events
+            while True:
+                event = await queue.get()
+                if event is None:
+                    # End of stream
+                    break
+                yield f"data: {json.dumps(event)}\n\n"
 
             # Done
             yield "data: [DONE]\n\n"
@@ -114,6 +146,10 @@ async def stream_sse_events(content: str, session_id: str | None) -> AsyncGenera
             event = {"type": "error", "data": str(e)}
             yield f"data: {json.dumps(event)}\n\n"
             yield "data: [DONE]\n\n"
+
+        finally:
+            # Make sure the background task completes
+            await task
 
 
 @router.post("/api/chat")
@@ -128,9 +164,9 @@ async def chat(request: Request) -> StreamingResponse:
 
     Response: Server-Sent Events stream
     """
-    with tracer.start_as_current_span("duckpond.chat") as chat_span:
+    with tracer.start_as_current_span("gazebo.chat") as chat_span:
         # Parse request - now much simpler!
-        with tracer.start_as_current_span("duckpond.parse_request"):
+        with tracer.start_as_current_span("gazebo.parse_request"):
             raw_body = await request.body()
             body = orjson.loads(raw_body)
 
@@ -138,8 +174,9 @@ async def chat(request: Request) -> StreamingResponse:
             session_id = body.get("sessionId")
             content = body.get("content", "")
 
-        chat_span.set_attribute("duckpond.content_length", len(content))
-        logger.info(f"chat request: sessionId={session_id[:8] if session_id else 'new'}..., content_len={len(content)}")
+        content_desc = f"{len(content)} parts" if isinstance(content, list) else f"{len(content)} chars"
+        chat_span.set_attribute("duckpond.content_length", len(content) if isinstance(content, str) else len(content))
+        logger.info(f"chat request: sessionId={session_id[:8] if session_id else 'new'}..., content={content_desc}")
 
         # Return SSE stream
         return StreamingResponse(
