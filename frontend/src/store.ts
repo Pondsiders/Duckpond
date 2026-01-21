@@ -171,18 +171,14 @@ export const useGazeboStore = create<GazeboStore>()(
         const message = state.messages.find((m) => m.id === messageId);
         if (!message || message.role !== "assistant") return;
 
-        // Find existing text part or create one
-        const textPartIndex = message.content.findIndex((p) => p.type === "text");
-        if (textPartIndex >= 0) {
-          // Append to existing text
-          const part = message.content[textPartIndex] as TextPart;
-          message.content[textPartIndex] = {
-            type: "text",
-            text: part.text + text,
-          };
+        // Check the last content part
+        const lastPart = message.content[message.content.length - 1];
+        if (lastPart?.type === "text") {
+          // Append to the last text part (streaming continuation)
+          lastPart.text += text;
         } else {
-          // Insert text at beginning (before tool calls)
-          message.content.unshift({ type: "text", text });
+          // New text part (after a tool call, or first text in message)
+          message.content.push({ type: "text", text });
         }
       });
     },

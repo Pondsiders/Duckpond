@@ -187,25 +187,77 @@ function ThreadView() {
       );
       const text = textParts.map((p) => p.text).join("\n");
 
-      if (!text.trim()) return;
+      // Extract image attachments - these are in appendMessage.attachments, not content!
+      // SimpleImageAttachmentAdapter puts images there as CompleteAttachment objects
+      const attachments = appendMessage.attachments || [];
+      const imageAttachments = attachments.filter(
+        (a): a is { type: "image"; name: string; contentType: string; file?: File; content: string } =>
+          a.type === "image" && "content" in a
+      );
+
+      if (!text.trim() && imageAttachments.length === 0) return;
+
+      console.log("[Gazebo] onNew called, text length:", text.length, "images:", imageAttachments.length);
 
       // 1. Add user message to store immediately (optimistic)
-      addUserMessage(text);
+      // Convert attachments to our store format
+      // att.content is an array like [{ type: "image", image: "data:..." }]
+      const storeAttachments = imageAttachments.flatMap(a => {
+        if (Array.isArray(a.content)) {
+          return a.content
+            .filter((c): c is { type: "image"; image: string } => c.type === "image" && "image" in c)
+            .map(c => ({ type: "image" as const, image: c.image }));
+        }
+        return [];
+      });
+      addUserMessage(text, storeAttachments);
 
       // 2. Create placeholder for assistant response
       const assistantId = addAssistantPlaceholder();
       setRunning(true);
 
+      // Build content for backend (Claude API format)
+      const backendContent: Array<{ type: string; text?: string; source?: { type: string; media_type: string; data: string } }> = [];
+      if (text.trim()) {
+        backendContent.push({ type: "text", text });
+      }
+      for (const att of imageAttachments) {
+        // att.content is an array like [{ type: "image", image: "data:image/jpeg;base64,..." }]
+        if (Array.isArray(att.content)) {
+          for (const contentPart of att.content) {
+            if (contentPart.type === "image" && "image" in contentPart) {
+              const dataUrl = contentPart.image as string;
+              if (dataUrl.startsWith("data:")) {
+                const [header, data] = dataUrl.split(",");
+                const mediaType = header.split(":")[1].split(";")[0];
+                backendContent.push({
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: mediaType,
+                    data: data,
+                  },
+                });
+              }
+            }
+          }
+        }
+      }
+
       try {
-        // 3. Call backend with minimal payload
+        // 3. Call backend with content (text + images)
+        console.log("[Gazebo] Starting fetch to /api/chat...");
         const response = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             sessionId,
-            content: text,
+            content: backendContent.length === 1 && backendContent[0].type === "text"
+              ? text  // Simple string for text-only
+              : backendContent,  // Array for multimodal
           }),
         });
+        console.log("[Gazebo] Fetch completed, status:", response.status);
 
         if (!response.ok) {
           throw new Error(`API error: ${response.status}`);
@@ -216,8 +268,10 @@ function ThreadView() {
         if (!reader) {
           throw new Error("No response body");
         }
+        console.log("[Gazebo] Got reader, starting SSE stream...");
 
         for await (const event of readSSEStream(reader)) {
+          console.log("[Gazebo] SSE event:", event.type);
           switch (event.type) {
             case "text":
               appendToAssistant(assistantId, event.data as string);
@@ -254,17 +308,20 @@ function ThreadView() {
 
             case "done":
               // Stream complete
+              console.log("[Gazebo] Stream complete (done event)");
               break;
           }
         }
+        console.log("[Gazebo] Exited SSE loop");
       } catch (error) {
-        console.error("[Duckpond] Chat error:", error);
+        console.error("[Gazebo] Chat error:", error);
         // Update placeholder with error message
         appendToAssistant(
           assistantId,
           `Error: ${error instanceof Error ? error.message : "Unknown error"}`
         );
       } finally {
+        console.log("[Gazebo] Finally block, setting isRunning=false");
         setRunning(false);
       }
     },
