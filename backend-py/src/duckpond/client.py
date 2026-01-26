@@ -29,6 +29,10 @@ def build_options(resume: str | None = None) -> ClaudeAgentOptions:
     We pass a minimal placeholder that the Loom will replace.
     """
     return ClaudeAgentOptions(
+        env={
+            # Tell the Loom which client we are
+            "ANTHROPIC_CUSTOM_HEADERS": "x-loom-client: duckpond",
+        },
         system_prompt="You are Claude, a helpful assistant.",  # Loom replaces this
         allowed_tools=[
             "Read", "Write", "Edit", "Glob", "Grep", "Bash",
