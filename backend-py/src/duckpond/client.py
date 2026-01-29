@@ -30,8 +30,8 @@ def build_options(resume: str | None = None) -> ClaudeAgentOptions:
     """
     return ClaudeAgentOptions(
         env={
-            # Tell the Loom which client we are
-            "ANTHROPIC_CUSTOM_HEADERS": "x-loom-client: duckpond",
+            # Tell the Loom who we are and what we want
+            "ANTHROPIC_CUSTOM_HEADERS": "x-loom-client: duckpond\nx-loom-pattern: alpha",
         },
         system_prompt="You are Claude, a helpful assistant.",  # Loom replaces this
         allowed_tools=[
