@@ -8,8 +8,8 @@
   "theme_color": "#0a0a0a",
   "icons": [
     {
-      "src": "/icon.png",
-      "sizes": "1024x1024",
+      "src": "/Icon-iOS-Default-512x512@1x.png",
+      "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
     }
