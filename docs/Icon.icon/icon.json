@@ -1,13 +1,21 @@
 {
   "fill" : {
-    "automatic-gradient" : "display-p3:0.25122,0.19128,0.14124,1.00000"
+    "automatic-gradient" : "extended-srgb:0.00000,0.53333,1.00000,1.00000"
   },
   "groups" : [
     {
       "layers" : [
         {
-          "image-name" : "Image 2.png",
-          "name" : "Image 2"
+          "glass" : true,
+          "image-name" : "Firefly_Alpha is an artificial intelligence who describes herself like this-__- A woman in he 593908.jpg",
+          "name" : "Firefly_Alpha is an artificial intelligence who describes herself like this-__- A woman in he 593908",
+          "position" : {
+            "scale" : 1.1,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
         }
       ],
       "shadow" : {
