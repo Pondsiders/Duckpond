@@ -26,6 +26,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     ToolResultBlock,
 )
+from claude_agent_sdk.types import StreamEvent
 
 from pondside.telemetry import get_tracer
 
@@ -44,7 +45,8 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
     results flow through an asyncio.Queue, this generator reads from the queue.
 
     Event types:
-    - text: { type: "text", data: "..." }
+    - text-delta: { type: "text-delta", data: "..." }  -- streaming text chunks
+    - text: { type: "text", data: "..." }  -- complete text block (fallback)
     - tool-call: { type: "tool-call", data: { toolCallId, toolName, args, argsText } }
     - tool-result: { type: "tool-result", data: { toolCallId, result, isError } }
     - session-id: { type: "session-id", data: "..." }
@@ -74,14 +76,31 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                 # Stream response
                 with tracer.start_as_current_span("gazebo.stream"):
                     async for message in client.receive_response():
-                        logger.debug(f"Received message: {type(message).__name__}")
+                        # Temporarily INFO level to debug streaming
+                        logger.info(f"Received message: {type(message).__name__}")
 
-                        if isinstance(message, AssistantMessage):
+                        # Handle streaming events (real-time text deltas)
+                        if isinstance(message, StreamEvent):
+                            event = message.event
+                            event_type = event.get("type")
+
+                            if event_type == "content_block_delta":
+                                delta = event.get("delta", {})
+                                delta_type = delta.get("type")
+
+                                if delta_type == "text_delta":
+                                    # Stream text chunk immediately!
+                                    text = delta.get("text", "")
+                                    if text:
+                                        await queue.put({"type": "text-delta", "data": text})
+
+                        # Handle complete messages (tool calls, etc.)
+                        elif isinstance(message, AssistantMessage):
                             for block in message.content:
-                                if isinstance(block, TextBlock):
-                                    await queue.put({"type": "text", "data": block.text})
-
-                                elif isinstance(block, ToolUseBlock):
+                                # NOTE: We skip TextBlock here because we already streamed
+                                # the text via StreamEvent text_delta events above.
+                                # Only handle tool calls from AssistantMessage.
+                                if isinstance(block, ToolUseBlock):
                                     await queue.put({
                                         "type": "tool-call",
                                         "data": {

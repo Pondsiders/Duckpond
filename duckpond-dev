@@ -1,0 +1,30 @@
+#!/bin/bash
+# Launch Duckpond-gazebo (dev worktree with different ports)
+
+set -e
+cd /Pondside/Barn/Duckpond-gazebo
+
+BACKEND_PORT=8767
+FRONTEND_PORT=8768
+
+# Figure out what URL to advertise
+CERT_DIR="/Pondside/Basement/Files/certs"
+TAILSCALE_HOST=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null)
+
+if [[ -n "$TAILSCALE_HOST" && -f "$CERT_DIR/$TAILSCALE_HOST.crt" ]]; then
+    FRONTEND_URL="https://${TAILSCALE_HOST}:${FRONTEND_PORT}"
+else
+    FRONTEND_URL="http://localhost:${FRONTEND_PORT}"
+fi
+
+echo "🔧 Starting Duckpond-gazebo (dev)..."
+echo "   Backend:  http://localhost:${BACKEND_PORT} (Python + reload)"
+echo "   Frontend: $FRONTEND_URL (HMR enabled)"
+echo ""
+
+npx concurrently \
+    --names "backend,frontend" \
+    --prefix-colors "magenta,cyan" \
+    --kill-others \
+    "cd backend-py && uv run uvicorn duckpond.main:app --host 0.0.0.0 --port ${BACKEND_PORT} --reload" \
+    "cd frontend && VITE_PORT=${FRONTEND_PORT} VITE_BACKEND_PORT=${BACKEND_PORT} npm run dev"
