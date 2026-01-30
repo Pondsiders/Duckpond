@@ -13,6 +13,7 @@ Session handling:
 """
 
 import json
+import os
 from typing import Any, AsyncIterator
 
 from claude_agent_sdk import (
@@ -30,8 +31,13 @@ def build_options(resume: str | None = None) -> ClaudeAgentOptions:
     """
     return ClaudeAgentOptions(
         env={
-            # Tell the Loom who we are and what we want
-            "ANTHROPIC_CUSTOM_HEADERS": "x-loom-client: duckpond\nx-loom-pattern: alpha",
+            # Inherit environment (for ANTHROPIC_API_KEY, REDIS_URL, etc.)
+            **os.environ,
+            # Pattern selection: hook reads this, writes to metadata, Deliverator promotes to header
+            # This way only USER prompts get the pattern—SDK helper calls (Haiku) stay pattern-free
+            "LOOM_PATTERN": "alpha",
+            # Client identification (still goes in headers, but that's fine for all calls)
+            "ANTHROPIC_CUSTOM_HEADERS": "x-loom-client: duckpond",
         },
         system_prompt="You are Claude, a helpful assistant.",  # Loom replaces this
         allowed_tools=[
