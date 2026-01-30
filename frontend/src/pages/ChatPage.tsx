@@ -41,7 +41,7 @@ const fontScale = 1.25;
 // -----------------------------------------------------------------------------
 
 interface StreamEvent {
-  type: "text" | "tool-call" | "tool-result" | "session-id" | "done" | "error";
+  type: "text-delta" | "text" | "tool-call" | "tool-result" | "session-id" | "done" | "error";
   data: unknown;
 }
 
@@ -271,9 +271,18 @@ function ThreadView() {
         console.log("[Gazebo] Got reader, starting SSE stream...");
 
         for await (const event of readSSEStream(reader)) {
-          console.log("[Gazebo] SSE event:", event.type);
+          // Only log non-delta events to avoid spam
+          if (event.type !== "text-delta") {
+            console.log("[Gazebo] SSE event:", event.type);
+          }
           switch (event.type) {
+            case "text-delta":
+              // Real-time streaming! Append each chunk as it arrives
+              appendToAssistant(assistantId, event.data as string);
+              break;
+
             case "text":
+              // Fallback for complete text blocks (shouldn't happen often with streaming)
               appendToAssistant(assistantId, event.data as string);
               break;
 
