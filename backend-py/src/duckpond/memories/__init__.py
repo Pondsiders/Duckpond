@@ -9,5 +9,6 @@ directly instead of calling out to the Intro microservice.
 """
 
 from .recall import recall
+from .suggest import suggest
 
-__all__ = ["recall"]
+__all__ = ["recall", "suggest"]

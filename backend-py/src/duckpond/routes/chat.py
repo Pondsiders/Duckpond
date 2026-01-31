@@ -30,6 +30,7 @@ from claude_agent_sdk.types import StreamEvent
 
 from duckpond.client import client, build_structured_input
 from duckpond.memories import recall
+from duckpond.memories.suggest import suggest
 
 router = APIRouter()
 
@@ -55,6 +56,7 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
     async def run_sdk() -> None:
         """Run the SDK interaction in a background task."""
         sid = session_id
+        assistant_text_parts: list[str] = []  # Accumulate assistant response for suggest()
 
         try:
             with logfire.span("gazebo.run", session_id=sid[:8] if sid else "new"):
@@ -62,7 +64,7 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                 await client.ensure_session(sid)
 
                 # Recall relevant memories (associative recall)
-                # This asks OLMo what sounds familiar, searches Cortex, deduplicates
+                # Direct Cortex search with the prompt, deduplicates via Redis
                 memories = []
                 if sid and isinstance(content, str):
                     memories = await recall(content, sid)
@@ -86,7 +88,6 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                 # Stream response
                 with logfire.span("gazebo.stream"):
                     async for message in client.receive_response():
-                        # Temporarily INFO level to debug streaming
                         logfire.debug("Received message", message_type=type(message).__name__)
 
                         # Handle streaming events (real-time text deltas)
@@ -102,6 +103,7 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                                     # Stream text chunk immediately!
                                     text = delta.get("text", "")
                                     if text:
+                                        assistant_text_parts.append(text)  # Accumulate for suggest
                                         await queue.put({"type": "text-delta", "data": text})
 
                         # Handle complete messages (tool calls, etc.)
@@ -143,6 +145,14 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                             client.update_session_id(sid)
                             logfire.info("ResultMessage", session_id=sid[:8] if sid else "none")
                             await queue.put({"type": "session-id", "data": sid})
+
+                # === Fire off memorables extraction (fire-and-forget) ===
+                # After turn completes, ask OLMo what's memorable
+                # Results accumulate in Redis for Loom to inject next turn
+                if sid and isinstance(content, str) and assistant_text_parts:
+                    assistant_response = "".join(assistant_text_parts)
+                    asyncio.create_task(suggest(content, assistant_response, sid))
+                    logfire.info("Fired suggest task", user_len=len(content), assistant_len=len(assistant_response))
 
         except Exception as e:
             logfire.exception(f"SDK error: {e}")
