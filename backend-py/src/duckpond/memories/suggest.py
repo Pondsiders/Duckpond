@@ -7,8 +7,8 @@ This is the thick-client implementation of Intro's memorables extraction,
 processing single turns instead of the whole conversation buffer.
 """
 
+import json
 import os
-import re
 from typing import Any
 
 import httpx
@@ -108,10 +108,20 @@ async def _call_olmo(user_content: str, assistant_content: str) -> list[str]:
         logfire.warning("OLLAMA_URL or OLLAMA_MODEL not set, skipping suggest")
         return []
 
-    prompt = TURN_PROMPT_TEMPLATE.format(
+    user_prompt = TURN_PROMPT_TEMPLATE.format(
         user_content=user_content[:2000],  # Truncate very long messages
         assistant_content=assistant_content[:4000],
     )
+
+    # Build input messages for OTel logging
+    input_messages = json.dumps([
+        {"role": "user", "parts": [{"type": "text", "content": user_prompt[:500] + "..."}]}
+    ])
+
+    # Truncated system instructions for OTel (full prompt is huge)
+    system_instructions = json.dumps([
+        {"type": "text", "content": INTRO_SYSTEM_PROMPT[:500] + "..."}
+    ])
 
     with logfire.span(
         "memories.suggest_olmo",
@@ -119,6 +129,8 @@ async def _call_olmo(user_content: str, assistant_content: str) -> list[str]:
             "gen_ai.operation.name": "chat",
             "gen_ai.provider.name": "ollama",
             "gen_ai.request.model": OLLAMA_MODEL,
+            "gen_ai.system_instructions": system_instructions,
+            "gen_ai.input.messages": input_messages,
         }
     ) as span:
         try:
@@ -129,7 +141,7 @@ async def _call_olmo(user_content: str, assistant_content: str) -> list[str]:
                         "model": OLLAMA_MODEL,
                         "messages": [
                             {"role": "system", "content": INTRO_SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt},
+                            {"role": "user", "content": user_prompt},
                         ],
                         "stream": False,
                         "options": {"num_ctx": 8192},
@@ -140,10 +152,16 @@ async def _call_olmo(user_content: str, assistant_content: str) -> list[str]:
             result = response.json()
             output = result.get("message", {}).get("content", "")
 
-            # Log tokens for observability
-            span.set_attribute("gen_ai.usage.input_tokens", result.get("prompt_eval_count", 0))
-            span.set_attribute("gen_ai.usage.output_tokens", result.get("eval_count", 0))
+            # Set response attributes for Logfire Model Run panel
+            prompt_tokens = result.get("prompt_eval_count", 0)
+            completion_tokens = result.get("eval_count", 0)
+
+            span.set_attribute("gen_ai.usage.input_tokens", prompt_tokens)
+            span.set_attribute("gen_ai.usage.output_tokens", completion_tokens)
             span.set_attribute("gen_ai.response.model", OLLAMA_MODEL)
+            span.set_attribute("gen_ai.output.messages", json.dumps([
+                {"role": "assistant", "parts": [{"type": "text", "content": output}]}
+            ]))
 
             memorables = _parse_memorables(output)
             logfire.info("OLMo memorables extracted", count=len(memorables), raw_output=output[:200])
