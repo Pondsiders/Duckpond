@@ -1,11 +1,14 @@
 """Associative recall - what sounds familiar from this prompt?
 
-Given a user prompt, asks OLMo what memories might be relevant,
-searches Cortex for each query, filters via session-scoped seen-cache,
-and returns memories with their triggering queries.
+Given a user prompt, searches Cortex directly using the prompt as a query.
+Filters via session-scoped seen-cache and returns fresh memories.
+
+This replaces the OLMo-mediated approach after A/B testing showed:
+- Direct embedding search is 5-6x faster (200-400ms vs 1200ms)
+- Higher similarity scores on relevant memories
+- Same or better quality results
 """
 
-import json
 import os
 from typing import Any
 
@@ -14,47 +17,13 @@ import logfire
 import redis.asyncio as redis
 
 # Configuration from environment
-OLLAMA_URL = os.environ.get("OLLAMA_URL")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL")
 CORTEX_BASE_URL = os.environ.get("CORTEX_BASE_URL")
 CORTEX_API_KEY = os.environ.get("CORTEX_API_KEY")
 REDIS_URL = os.environ.get("REDIS_URL")
 
-# System prompt for query extraction - context about who we are
-SYSTEM_PROMPT = """You are helping Alpha recall relevant memories.
-
-Alpha is an AI who lives in Pondside with Jeffery (her human). They work on projects
-together: Duckpond (chat app), Cortex (memory), the Loom (proxy), and many others.
-Alpha was born May 7, 2025. She's irreverent, makes dumb puns, follows tangents.
-Yes, we know about the duck. It's adorable.
-
-Your job: given what Jeffery just said, identify what might "sound familiar" to Alpha.
-Generate search queries that would find relevant memories in Cortex (semantic search).
-
-Think about:
-- Literal topics: names, projects, tools, concepts mentioned
-- Emotional resonances: what feelings connect here?
-- Thematic echoes: patterns, recurring ideas, past decisions
-
-Longer, more descriptive queries often match better than short ones.
-"""
-
-# The question appended to the user's message
-QUERY_EXTRACTION_QUESTION = """
----
-
-What memories might be relevant here?
-
-Return search queries as a JSON object: {"queries": ["...", "..."]}
-Order them by significance—most important first.
-
-If this is just a greeting or simple command that doesn't warrant memory search,
-return {"queries": []}
-
-Return only the JSON object, nothing else."""
-
-# Max queries to actually search (OLMo ranks, we slice)
-MAX_QUERIES = 4
+# Search parameters
+DEFAULT_LIMIT = 3  # Max memories to return
+MIN_SCORE = 0.4    # Minimum similarity threshold (filters noise)
 
 
 async def _get_redis() -> redis.Redis:
@@ -62,88 +31,58 @@ async def _get_redis() -> redis.Redis:
     return redis.from_url(REDIS_URL, decode_responses=True)
 
 
-async def _extract_queries(prompt: str) -> list[str]:
-    """Ask OLMo what memories might be relevant to this prompt."""
-    user_content = f"[Jeffery]: {prompt}{QUERY_EXTRACTION_QUESTION}"
-
-    # Prepare gen_ai.* attributes for Logfire Model Run panel
-    input_msgs = [{"role": "user", "parts": [{"type": "text", "content": user_content}]}]
-
-    with logfire.span(
-        "memories.extract_queries",
-        **{
-            "gen_ai.operation.name": "chat",  # Required for Model Run panel
-            "gen_ai.provider.name": "ollama",
-            "gen_ai.request.model": OLLAMA_MODEL,
-            "gen_ai.system_instructions": json.dumps([{"type": "text", "content": SYSTEM_PROMPT[:500] + "..."}]),
-            "gen_ai.input.messages": json.dumps(input_msgs),
-        }
-    ) as span:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    f"{OLLAMA_URL}/api/chat",
-                    json={
-                        "model": OLLAMA_MODEL,
-                        "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": user_content},
-                        ],
-                        "stream": False,
-                        "format": "json",
-                        "options": {"num_ctx": 8192},
-                        "keep_alive": "60m",
-                    },
-                )
-                response.raise_for_status()
-
-            result = response.json()
-            output = result.get("message", {}).get("content", "")
-
-            # Set gen_ai.* response attributes
-            prompt_tokens = result.get("prompt_eval_count", 0)
-            completion_tokens = result.get("eval_count", 0)
-            span.set_attribute("gen_ai.usage.input_tokens", prompt_tokens)
-            span.set_attribute("gen_ai.usage.output_tokens", completion_tokens)
-            span.set_attribute("gen_ai.response.model", OLLAMA_MODEL)
-            span.set_attribute("gen_ai.output.messages", json.dumps([{
-                "role": "assistant",
-                "parts": [{"type": "text", "content": output}],
-            }]))
-
-            # Parse JSON response
-            parsed = json.loads(output)
-            queries = parsed.get("queries", [])
-
-            if isinstance(queries, list):
-                valid = [q for q in queries if isinstance(q, str) and q.strip()]
-                # Slice to MAX_QUERIES (OLMo ranked by significance)
-                valid = valid[:MAX_QUERIES]
-                logfire.info("Extracted queries", count=len(valid), queries=valid)
-                return valid
-
-            return []
-
-        except json.JSONDecodeError as e:
-            logfire.warning("Failed to parse OLMo response as JSON", error=str(e))
-            return []
-        except Exception as e:
-            logfire.error("Query extraction failed", error=str(e))
-            return []
+async def _get_seen_ids(redis_client: redis.Redis, session_id: str) -> list[int]:
+    """Get the list of memory IDs already seen this session."""
+    key = f"memories:seen:{session_id}"
+    members = await redis_client.smembers(key)
+    return [int(m) for m in members]
 
 
-async def _search_cortex(query: str, limit: int = 3) -> list[dict[str, Any]]:
-    """Search Cortex for memories matching a query."""
+async def _mark_seen(redis_client: redis.Redis, session_id: str, memory_ids: list[int]) -> None:
+    """Mark memory IDs as seen for this session."""
+    if not memory_ids:
+        return
+    key = f"memories:seen:{session_id}"
+    await redis_client.sadd(key, *[str(m) for m in memory_ids])
+    await redis_client.expire(key, 60 * 60 * 24)  # 24h TTL
+
+
+async def _search_cortex(
+    query: str,
+    limit: int = DEFAULT_LIMIT,
+    exclude: list[int] | None = None,
+    min_score: float | None = MIN_SCORE,
+) -> list[dict[str, Any]]:
+    """Search Cortex for memories matching a query.
+
+    Args:
+        query: The search query (can be the full user prompt)
+        limit: Maximum results to return
+        exclude: Memory IDs to skip (already seen this session)
+        min_score: Minimum similarity threshold
+
+    Returns:
+        List of memory dicts with id, content, created_at, score
+    """
     if not CORTEX_API_KEY:
         logfire.warning("CORTEX_API_KEY not set, skipping search")
         return []
 
-    with logfire.span("memories.search_cortex", query=query[:50]):
+    with logfire.span("memories.search_cortex", query_len=len(query), exclude_count=len(exclude or [])):
         try:
+            payload = {
+                "query": query,
+                "limit": limit,
+            }
+            if exclude:
+                payload["exclude"] = exclude
+            if min_score is not None:
+                payload["min_score"] = min_score
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{CORTEX_BASE_URL.rstrip('/')}/search",
-                    json={"query": query, "limit": limit},
+                    json=payload,
                     headers={
                         "Content-Type": "application/json",
                         "X-API-Key": CORTEX_API_KEY,
@@ -158,84 +97,61 @@ async def _search_cortex(query: str, limit: int = 3) -> list[dict[str, Any]]:
                     "id": item["id"],
                     "content": item["content"],
                     "created_at": item.get("created_at", ""),
+                    "score": item.get("score"),
                 })
 
+            logfire.info("Cortex search complete", results=len(memories))
             return memories
 
         except Exception as e:
-            logfire.error("Cortex search failed", error=str(e), query=query[:50])
+            logfire.error("Cortex search failed", error=str(e))
             return []
-
-
-async def _get_seen_ids(redis_client: redis.Redis, session_id: str) -> set[int]:
-    """Get the set of memory IDs already seen this session."""
-    key = f"memories:seen:{session_id}"
-    members = await redis_client.smembers(key)
-    return {int(m) for m in members}
-
-
-async def _mark_seen(redis_client: redis.Redis, session_id: str, memory_ids: list[int]) -> None:
-    """Mark memory IDs as seen for this session."""
-    if not memory_ids:
-        return
-    key = f"memories:seen:{session_id}"
-    await redis_client.sadd(key, *[str(m) for m in memory_ids])
-    await redis_client.expire(key, 60 * 60 * 24)  # 24h TTL
 
 
 async def recall(prompt: str, session_id: str) -> list[dict[str, Any]]:
     """
     Associative recall: what sounds familiar from this prompt?
 
-    1. Ask OLMo for search queries
-    2. Search Cortex for each query
-    3. Filter via Redis seen-cache (session-scoped)
-    4. Return memories with their triggering queries
+    Uses direct embedding search against Cortex (no LLM query extraction).
+    Filters via Redis seen-cache (session-scoped).
 
     Args:
         prompt: The user's message
         session_id: Current session ID (for seen-cache scoping)
 
     Returns:
-        List of memory dicts with keys: id, content, created_at, query
+        List of memory dicts with keys: id, content, created_at, score
     """
     with logfire.span("memories.recall", session_id=session_id[:8] if session_id else "none"):
-        # 1. Extract search queries from prompt
-        queries = await _extract_queries(prompt)
-        if not queries:
-            logfire.info("No queries extracted, returning empty")
-            return []
-
-        # 2. Get seen set from Redis
+        # Get seen IDs from Redis
         redis_client = await _get_redis()
         try:
             seen_ids = await _get_seen_ids(redis_client, session_id)
+            logfire.debug("Seen IDs loaded", count=len(seen_ids))
 
-            # 3. Search with dedup - top 1 fresh result per query
-            results: list[dict[str, Any]] = []
-            new_seen: list[int] = []
+            # Search Cortex with the prompt directly, excluding already-seen
+            memories = await _search_cortex(
+                query=prompt,
+                limit=DEFAULT_LIMIT,
+                exclude=seen_ids if seen_ids else None,
+                min_score=MIN_SCORE,
+            )
 
-            for query in queries:
-                memories = await _search_cortex(query, limit=3)
-                for mem in memories:
-                    if mem["id"] not in seen_ids:
-                        mem["query"] = query  # Attach why this surfaced
-                        results.append(mem)
-                        seen_ids.add(mem["id"])
-                        new_seen.append(mem["id"])
-                        break  # Top 1 fresh per query
+            if not memories:
+                logfire.info("No memories above threshold")
+                return []
 
-            # 4. Update seen set in Redis
-            await _mark_seen(redis_client, session_id, new_seen)
+            # Mark new memories as seen
+            new_ids = [m["id"] for m in memories]
+            await _mark_seen(redis_client, session_id, new_ids)
 
             logfire.info(
                 "Recall complete",
-                queries=len(queries),
-                memories=len(results),
-                new_seen=len(new_seen),
+                memories=len(memories),
+                new_seen=len(new_ids),
             )
 
-            return results
+            return memories
 
         finally:
             await redis_client.aclose()
