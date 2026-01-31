@@ -30,7 +30,7 @@ from claude_agent_sdk.types import StreamEvent
 
 from pondside.telemetry import get_tracer
 
-from duckpond.client import client
+from duckpond.client import client, build_structured_input
 
 logger = logging.getLogger(__name__)
 tracer = get_tracer()
@@ -67,10 +67,20 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                 # Ensure session exists
                 await client.ensure_session(sid)
 
-                # Send query to Claude
+                # Build structured input envelope
+                # This wraps the user prompt with metadata for the Loom
+                with tracer.start_as_current_span("gazebo.build_envelope"):
+                    structured_input = build_structured_input(
+                        prompt=content,
+                        session_id=sid,
+                        memories=None,  # TODO: fetch from Intro
+                    )
+                    logger.info(f"Built structured input: {len(structured_input)} bytes")
+
+                # Send query to Claude (the structured JSON goes as the "prompt")
                 with tracer.start_as_current_span("gazebo.query"):
-                    logger.info("Sending query to Claude...")
-                    await client.query(content, session_id=sid)
+                    logger.info("Sending structured input to Claude...")
+                    await client.query(structured_input, session_id=sid)
                     logger.info("Query sent, about to receive response...")
 
                 # Stream response
