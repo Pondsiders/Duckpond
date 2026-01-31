@@ -29,6 +29,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import StreamEvent
 
 from duckpond.client import client, build_structured_input
+from duckpond.memories import recall
 
 router = APIRouter()
 
@@ -60,15 +61,21 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                 # Ensure session exists
                 await client.ensure_session(sid)
 
+                # Recall relevant memories (associative recall)
+                # This asks OLMo what sounds familiar, searches Cortex, deduplicates
+                memories = []
+                if sid and isinstance(content, str):
+                    memories = await recall(content, sid)
+
                 # Build structured input envelope
                 # This wraps the user prompt with metadata for the Loom
                 with logfire.span("gazebo.build_envelope"):
                     structured_input = build_structured_input(
                         prompt=content,
                         session_id=sid,
-                        memories=None,  # TODO: fetch from Intro
+                        memories=memories,
                     )
-                    logfire.info("Built structured input", bytes=len(structured_input))
+                    logfire.info("Built structured input", bytes=len(structured_input), memories=len(memories))
 
                 # Send query to Claude (the structured JSON goes as the "prompt")
                 with logfire.span("gazebo.query"):
