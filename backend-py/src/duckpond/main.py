@@ -6,23 +6,35 @@ Lazy initialization: no client at startup.
 First chat request creates the client.
 """
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from pondside.telemetry import init
+import logfire
 
 from duckpond.client import client
 from duckpond.routes.chat import router as chat_router
 from duckpond.routes.sessions import router as sessions_router
 from duckpond.routes.context import router as context_router
 
-# Initialize telemetry - must be done before anything else
-# "gazebo" distinguishes this from main Duckpond in traces
-init("gazebo")
+# Suppress harmless "Failed to detach context" warnings from OTel
+# These occur when spans cross async generator boundaries - expected behavior
+logging.getLogger("opentelemetry.context").setLevel(logging.CRITICAL)
+
+# Initialize Logfire
+# Scrubbing disabled - too aggressive (redacts "session", "auth", etc.)
+# Our logs are authenticated with 30-day retention; acceptable risk for debugging visibility
+logfire.configure(
+    service_name="gazebo",
+    distributed_tracing=True,
+    scrubbing=False,
+)
+
+# Route Python logging through Logfire
+logging.basicConfig(handlers=[logfire.LogfireLoggingHandler()], level=logging.INFO)
 
 
 @asynccontextmanager
@@ -46,6 +58,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Instrument FastAPI with Logfire for automatic request tracing
+logfire.instrument_fastapi(app)
 
 # CORS - allow frontend
 app.add_middleware(

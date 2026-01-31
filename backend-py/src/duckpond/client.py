@@ -22,7 +22,6 @@ import os
 from typing import Any, AsyncIterator
 
 import pendulum
-from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from claude_agent_sdk import (
