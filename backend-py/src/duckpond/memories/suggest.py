@@ -115,12 +115,12 @@ async def _call_olmo(user_content: str, assistant_content: str) -> list[str]:
 
     # Build input messages for OTel logging
     input_messages = json.dumps([
-        {"role": "user", "parts": [{"type": "text", "content": user_prompt[:500] + "..."}]}
+        {"role": "user", "parts": [{"type": "text", "content": user_prompt + "..."}]}
     ])
 
-    # Truncated system instructions for OTel (full prompt is huge)
+    # System instructions for OTel (full prompt is huge and that's okay)
     system_instructions = json.dumps([
-        {"type": "text", "content": INTRO_SYSTEM_PROMPT[:500] + "..."}
+        {"type": "text", "content": INTRO_SYSTEM_PROMPT + "..."}
     ])
 
     with logfire.span(

@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
-    "claude-agent-sdk==0.1.26",  # Pinned - update deliberately when ready
+    "claude-agent-sdk==0.1.19",  # Pinned - update deliberately when ready
     "assistant-stream>=0.0.31",
     "redis>=5.0.0",
     "pendulum>=3.0.0",

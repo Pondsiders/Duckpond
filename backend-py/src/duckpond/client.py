@@ -111,6 +111,10 @@ def build_options(resume: str | None = None) -> ClaudeAgentOptions:
     extracts and promotes to HTTP headers. The Loom then replaces the entire
     system prompt with Alpha's woven soul.
     """
+    # Lazy import to avoid circular dependency
+    # (cortex.py imports client for session_id access)
+    from duckpond.tools import cortex_server
+
     return ClaudeAgentOptions(
         env={
             # Inherit environment (for ANTHROPIC_API_KEY, REDIS_URL, etc.)
@@ -119,10 +123,15 @@ def build_options(resume: str | None = None) -> ClaudeAgentOptions:
             "ANTHROPIC_CUSTOM_HEADERS": "x-loom-client: duckpond",
         },
         system_prompt=build_envelope_system_prompt(resume),  # Loom replaces this
+        mcp_servers={"cortex": cortex_server},
         allowed_tools=[
             "Read", "Write", "Edit", "Glob", "Grep", "Bash",
             "WebFetch", "WebSearch", "Task", "Skill",
             "TodoWrite", "NotebookEdit",
+            # Cortex MCP tools
+            "mcp__cortex__store",
+            "mcp__cortex__search",
+            "mcp__cortex__recent",
         ],
         permission_mode="bypassPermissions",
         cwd="/Pondside",
