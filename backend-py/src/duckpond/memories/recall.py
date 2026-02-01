@@ -1,14 +1,18 @@
 """Associative recall - what sounds familiar from this prompt?
 
-Given a user prompt, searches Cortex directly using the prompt as a query.
-Filters via session-scoped seen-cache and returns fresh memories.
+Given a user prompt, searches Cortex using two parallel strategies:
+1. Direct embedding search (fast, catches overall semantic similarity)
+2. OLMo query extraction (slower, catches distinctive terms in long prompts)
 
-This replaces the OLMo-mediated approach after A/B testing showed:
-- Direct embedding search is 5-6x faster (200-400ms vs 1200ms)
-- Higher similarity scores on relevant memories
-- Same or better quality results
+Results are merged and deduped. Filters via session-scoped seen-cache.
+
+The dual approach solves the "Mrs. Hughesbot problem": when a distinctive
+term is buried in a long meta-prompt, direct embedding averages it out.
+OLMo can isolate it as a separate query.
 """
 
+import asyncio
+import json
 import os
 from typing import Any
 
@@ -20,10 +24,37 @@ import redis.asyncio as redis
 CORTEX_BASE_URL = os.environ.get("CORTEX_BASE_URL")
 CORTEX_API_KEY = os.environ.get("CORTEX_API_KEY")
 REDIS_URL = os.environ.get("REDIS_URL")
+OLLAMA_URL = os.environ.get("OLLAMA_URL")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL")
 
 # Search parameters
-DEFAULT_LIMIT = 3  # Max memories to return
+DEFAULT_LIMIT = 3  # Max memories to return from direct search
+QUERY_LIMIT = 1    # Max memories per extracted query (top 1 only)
 MIN_SCORE = 0.4    # Minimum similarity threshold (filters noise)
+
+# Query extraction prompt (adapted from Intro)
+# Key insight: ignore the main topic (embedding search catches that).
+# Focus on the frilly edges—brief mentions, proper nouns, asides.
+QUERY_EXTRACTION_PROMPT = """Jeffery just said:
+
+"{message}"
+
+---
+
+Alpha is searching her memories. A separate system already handles the MAIN topic of this message. Your job is to catch the PERIPHERAL details that might get lost:
+
+- Names mentioned in passing (people, pets, projects)
+- Brief references to past events or inside jokes
+- Asides that take only 10-20 words of a longer message
+- Distinctive terms that aren't the central subject
+
+IGNORE the main thrust of what Jeffery is talking about. Focus on the edges.
+
+Give me 0-3 short search queries (2-5 words each) for these peripheral mentions: {{"queries": ["query one", "query two"]}}
+
+If there are no peripheral details worth searching (just one focused topic), return {{"queries": []}}
+
+Return only the JSON object, nothing else."""
 
 
 async def _get_redis() -> redis.Redis:
@@ -68,7 +99,7 @@ async def _search_cortex(
         logfire.warning("CORTEX_API_KEY not set, skipping search")
         return []
 
-    with logfire.span("memories.search_cortex", query_len=len(query), exclude_count=len(exclude or [])):
+    with logfire.span("memories.search_cortex", query_preview=query[:50], exclude_count=len(exclude or [])):
         try:
             payload = {
                 "query": query,
@@ -100,7 +131,7 @@ async def _search_cortex(
                     "score": item.get("score"),
                 })
 
-            logfire.info("Cortex search complete", results=len(memories))
+            logfire.debug("Cortex search complete", query_preview=query[:30], results=len(memories))
             return memories
 
         except Exception as e:
@@ -108,12 +139,112 @@ async def _search_cortex(
             return []
 
 
+async def _extract_queries(message: str) -> list[str]:
+    """Extract search queries from a user message using OLMo.
+
+    Returns 1-4 short queries, or empty list if message doesn't warrant search.
+    """
+    if not OLLAMA_URL or not OLLAMA_MODEL:
+        logfire.debug("OLLAMA not configured, skipping query extraction")
+        return []
+
+    prompt = QUERY_EXTRACTION_PROMPT.format(message=message[:2000])  # Truncate very long messages
+
+    with logfire.span(
+        "memories.extract_queries",
+        **{
+            "gen_ai.operation.name": "chat",
+            "gen_ai.provider.name": "ollama",
+            "gen_ai.request.model": OLLAMA_MODEL,
+        }
+    ) as span:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    f"{OLLAMA_URL}/api/chat",
+                    json={
+                        "model": OLLAMA_MODEL,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                        "format": "json",
+                        "options": {"num_ctx": 4096},
+                    },
+                )
+                response.raise_for_status()
+
+            result = response.json()
+            output = result.get("message", {}).get("content", "")
+
+            # Log token usage for observability
+            span.set_attribute("gen_ai.usage.input_tokens", result.get("prompt_eval_count", 0))
+            span.set_attribute("gen_ai.usage.output_tokens", result.get("eval_count", 0))
+            span.set_attribute("gen_ai.response.model", OLLAMA_MODEL)
+
+            # Parse JSON response
+            parsed = json.loads(output)
+            queries = parsed.get("queries", [])
+
+            if isinstance(queries, list):
+                valid = [q for q in queries if isinstance(q, str) and q.strip()]
+                logfire.info("Extracted queries", count=len(valid), queries=valid)
+                return valid
+
+            return []
+
+        except json.JSONDecodeError as e:
+            logfire.warning("Failed to parse OLMo response as JSON", error=str(e), raw=output[:200] if 'output' in dir() else "")
+            return []
+        except Exception as e:
+            logfire.error("Query extraction failed", error=str(e))
+            return []
+
+
+async def _search_extracted_queries(
+    queries: list[str],
+    exclude: list[int],
+) -> list[dict[str, Any]]:
+    """Search Cortex for each extracted query, taking top 1 per query.
+
+    Returns list of memories, one per query (deduped against exclude list).
+    """
+    if not queries:
+        return []
+
+    # Search all queries in parallel
+    async def search_one(query: str) -> dict[str, Any] | None:
+        results = await _search_cortex(
+            query=query,
+            limit=QUERY_LIMIT,
+            exclude=exclude,
+            min_score=MIN_SCORE,
+        )
+        return results[0] if results else None
+
+    with logfire.span("memories.search_extracted", query_count=len(queries)):
+        tasks = [search_one(q) for q in queries]
+        results = await asyncio.gather(*tasks)
+
+        # Filter None results and dedupe
+        memories = []
+        seen_in_batch = set(exclude)
+        for mem in results:
+            if mem and mem["id"] not in seen_in_batch:
+                memories.append(mem)
+                seen_in_batch.add(mem["id"])
+
+        logfire.info("Extracted query search complete", found=len(memories))
+        return memories
+
+
 async def recall(prompt: str, session_id: str) -> list[dict[str, Any]]:
     """
     Associative recall: what sounds familiar from this prompt?
 
-    Uses direct embedding search against Cortex (no LLM query extraction).
-    Filters via Redis seen-cache (session-scoped).
+    Uses two parallel strategies:
+    1. Direct embedding search (fast, semantic similarity)
+    2. OLMo query extraction + search (slower, catches distinctive terms)
+
+    Results are merged and deduped. Filters via Redis seen-cache.
 
     Args:
         prompt: The user's message
@@ -129,29 +260,47 @@ async def recall(prompt: str, session_id: str) -> list[dict[str, Any]]:
             seen_ids = await _get_seen_ids(redis_client, session_id)
             logfire.debug("Seen IDs loaded", count=len(seen_ids))
 
-            # Search Cortex with the prompt directly, excluding already-seen
-            memories = await _search_cortex(
+            # Run direct search and query extraction in parallel
+            direct_task = _search_cortex(
                 query=prompt,
                 limit=DEFAULT_LIMIT,
                 exclude=seen_ids if seen_ids else None,
                 min_score=MIN_SCORE,
             )
+            extract_task = _extract_queries(prompt)
 
-            if not memories:
+            direct_memories, extracted_queries = await asyncio.gather(direct_task, extract_task)
+
+            # Build exclude list for extracted query searches (seen + direct results)
+            exclude_for_extracted = set(seen_ids)
+            for mem in direct_memories:
+                exclude_for_extracted.add(mem["id"])
+
+            # Search for extracted queries
+            extracted_memories = await _search_extracted_queries(
+                extracted_queries,
+                list(exclude_for_extracted),
+            )
+
+            # Merge: direct results first, then extracted (they're already deduped)
+            all_memories = direct_memories + extracted_memories
+
+            if not all_memories:
                 logfire.info("No memories above threshold")
                 return []
 
-            # Mark new memories as seen
-            new_ids = [m["id"] for m in memories]
+            # Mark all new memories as seen
+            new_ids = [m["id"] for m in all_memories]
             await _mark_seen(redis_client, session_id, new_ids)
 
             logfire.info(
                 "Recall complete",
-                memories=len(memories),
-                new_seen=len(new_ids),
+                direct=len(direct_memories),
+                extracted=len(extracted_memories),
+                total=len(all_memories),
             )
 
-            return memories
+            return all_memories
 
         finally:
             await redis_client.aclose()
