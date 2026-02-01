@@ -30,7 +30,7 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL")
 # Search parameters
 DEFAULT_LIMIT = 3  # Max memories to return from direct search
 QUERY_LIMIT = 1    # Max memories per extracted query (top 1 only)
-MIN_SCORE = 0.4    # Minimum similarity threshold (filters noise)
+MIN_SCORE = 0.1    # Minimum similarity threshold (low bar—in 768D, 0.1 is real signal)
 
 # Query extraction prompt (adapted from Intro)
 # Key insight: ignore the main topic (embedding search catches that).
@@ -220,17 +220,29 @@ async def _search_extracted_queries(
         )
         return results[0] if results else None
 
-    with logfire.span("memories.search_extracted", query_count=len(queries)):
+    with logfire.span("memories.search_extracted", query_count=len(queries)) as span:
         tasks = [search_one(q) for q in queries]
         results = await asyncio.gather(*tasks)
+
+        # Instrumentation: show what each query returned
+        query_results = {
+            q: (r["id"] if r else None)
+            for q, r in zip(queries, results)
+        }
+        span.set_attribute("search_extracted.query_results", str(query_results))
 
         # Filter None results and dedupe
         memories = []
         seen_in_batch = set(exclude)
-        for mem in results:
+        for i, mem in enumerate(results):
             if mem and mem["id"] not in seen_in_batch:
                 memories.append(mem)
                 seen_in_batch.add(mem["id"])
+                logfire.debug(f"Query '{queries[i]}' → memory #{mem['id']}")
+            elif mem:
+                logfire.debug(f"Query '{queries[i]}' → memory #{mem['id']} (deduped)")
+            else:
+                logfire.debug(f"Query '{queries[i]}' → no result above threshold")
 
         logfire.info("Extracted query search complete", found=len(memories))
         return memories
@@ -253,17 +265,17 @@ async def recall(prompt: str, session_id: str) -> list[dict[str, Any]]:
     Returns:
         List of memory dicts with keys: id, content, created_at, score
     """
-    with logfire.span("memories.recall", session_id=session_id[:8] if session_id else "none"):
+    with logfire.span("memories.recall", session_id=session_id[:8] if session_id else "none") as span:
         # Get seen IDs from Redis
         redis_client = await _get_redis()
         try:
             seen_ids = await _get_seen_ids(redis_client, session_id)
             logfire.debug("Seen IDs loaded", count=len(seen_ids))
 
-            # Run direct search and query extraction in parallel
+            # Run direct search (top 1 only) and query extraction in parallel
             direct_task = _search_cortex(
                 query=prompt,
-                limit=DEFAULT_LIMIT,
+                limit=1,  # Just top 1 for "wtf is Jeffery talking about generally"
                 exclude=seen_ids if seen_ids else None,
                 min_score=MIN_SCORE,
             )
@@ -271,19 +283,32 @@ async def recall(prompt: str, session_id: str) -> list[dict[str, Any]]:
 
             direct_memories, extracted_queries = await asyncio.gather(direct_task, extract_task)
 
-            # Build exclude list for extracted query searches (seen + direct results)
+            # Instrumentation: attach what we got from each path
+            span.set_attribute("recall.extracted_queries", extracted_queries)
+            span.set_attribute("recall.direct_memory_ids", [m["id"] for m in direct_memories])
+
+            # Build exclude list for extracted query searches (seen + direct result)
             exclude_for_extracted = set(seen_ids)
             for mem in direct_memories:
                 exclude_for_extracted.add(mem["id"])
 
-            # Search for extracted queries
+            # Search for extracted queries (top 1 per query)
             extracted_memories = await _search_extracted_queries(
                 extracted_queries,
                 list(exclude_for_extracted),
             )
 
-            # Merge: direct results first, then extracted (they're already deduped)
-            all_memories = direct_memories + extracted_memories
+            # Instrumentation: attach extracted search results
+            span.set_attribute("recall.extracted_memory_ids", [m["id"] for m in extracted_memories])
+
+            # Merge: extracted first (the specific "hey shithead remember this"),
+            # then direct (the general "wtf is Jeffery talking about")
+            all_memories = extracted_memories + direct_memories
+            span.set_attribute("recall.all_memories", all_memories)
+
+            # Instrumentation: attach final merged result
+            span.set_attribute("recall.all_memory_ids", [m["id"] for m in all_memories])
+            span.set_attribute("recall.all_memory_count", len(all_memories))
 
             if not all_memories:
                 logfire.info("No memories above threshold")
@@ -295,8 +320,8 @@ async def recall(prompt: str, session_id: str) -> list[dict[str, Any]]:
 
             logfire.info(
                 "Recall complete",
-                direct=len(direct_memories),
                 extracted=len(extracted_memories),
+                direct=len(direct_memories),
                 total=len(all_memories),
             )
 
