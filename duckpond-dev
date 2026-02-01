@@ -18,13 +18,16 @@ else
 fi
 
 echo "🔧 Starting Duckpond-gazebo (dev)..."
-echo "   Backend:  http://localhost:${BACKEND_PORT} (Python + reload)"
+echo "   Backend:  http://localhost:${BACKEND_PORT} (no reload - restart manually)"
 echo "   Frontend: $FRONTEND_URL (HMR enabled)"
+echo ""
+echo "   ⚠️  Backend reload disabled to prevent mid-conversation crashes."
+echo "   Restart the whole thing when you need backend changes."
 echo ""
 
 npx concurrently \
     --names "backend,frontend" \
     --prefix-colors "magenta,cyan" \
     --kill-others \
-    "cd backend-py && uv run uvicorn duckpond.main:app --host 0.0.0.0 --port ${BACKEND_PORT} --reload" \
+    "cd backend-py && uv run uvicorn duckpond.main:app --host 0.0.0.0 --port ${BACKEND_PORT}" \
     "cd frontend && VITE_PORT=${FRONTEND_PORT} VITE_BACKEND_PORT=${BACKEND_PORT} npm run dev"
