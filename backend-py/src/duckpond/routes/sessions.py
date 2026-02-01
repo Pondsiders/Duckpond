@@ -18,6 +18,33 @@ router = APIRouter()
 # Claude Code stores sessions here
 SESSIONS_DIR = Path(os.path.expanduser("~/.claude/projects/-Pondside"))
 
+# Canary that marks Duckpond's metadata envelope
+ALPHA_METADATA_CANARY = "ALPHA_METADATA_UlVCQkVSRFVDSw"
+
+
+def unwrap_alpha_metadata(text: str) -> str:
+    """Unwrap ALPHA_METADATA envelope if present, returning just the prompt.
+
+    Duckpond wraps user prompts in JSON with metadata for the Loom.
+    The JSONL stores this raw JSON, so on resume we need to extract
+    just the prompt text for display.
+    """
+    if ALPHA_METADATA_CANARY not in text:
+        return text
+
+    try:
+        # Find the JSON object
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start != -1 and end > start:
+            envelope = json.loads(text[start:end])
+            if "prompt" in envelope:
+                return envelope["prompt"]
+    except json.JSONDecodeError:
+        pass
+
+    return text
+
 
 def extract_display_messages(lines: list[str]) -> list[dict[str, Any]]:
     """Extract messages suitable for display from JSONL records.
@@ -41,7 +68,9 @@ def extract_display_messages(lines: list[str]) -> list[dict[str, Any]]:
             content = record.get("message", {}).get("content", "")
             # Normalize content to list of parts
             if isinstance(content, str):
-                parts = [{"type": "text", "text": content}]
+                # Unwrap ALPHA_METADATA envelope if present
+                text = unwrap_alpha_metadata(content)
+                parts = [{"type": "text", "text": text}]
                 messages.append({"role": "user", "content": parts})
             elif isinstance(content, list):
                 parts = []
@@ -52,7 +81,9 @@ def extract_display_messages(lines: list[str]) -> list[dict[str, Any]]:
                     elif isinstance(block, dict):
                         block_type = block.get("type")
                         if block_type == "text":
-                            parts.append({"type": "text", "text": block.get("text", "")})
+                            # Unwrap ALPHA_METADATA envelope if present
+                            text = unwrap_alpha_metadata(block.get("text", ""))
+                            parts.append({"type": "text", "text": text})
                         elif block_type == "image":
                             # Convert Claude API format to data URL for frontend
                             source = block.get("source", {})
@@ -176,14 +207,17 @@ async def list_sessions(limit: int = Query(default=20, ge=1, le=100)) -> list[di
                 if record.get("type") == "user":
                     msg_content = record.get("message", {}).get("content")
                     if isinstance(msg_content, str):
-                        title = msg_content[:50]
+                        # Unwrap ALPHA_METADATA envelope if present
+                        text = unwrap_alpha_metadata(msg_content)
+                        title = text[:50]
                     elif isinstance(msg_content, list):
                         for block in msg_content:
                             if isinstance(block, str):
-                                title = block[:50]
+                                title = unwrap_alpha_metadata(block)[:50]
                                 break
                             elif isinstance(block, dict) and block.get("type") == "text":
-                                title = (block.get("text") or "")[:50]
+                                text = unwrap_alpha_metadata(block.get("text") or "")
+                                title = text[:50]
                                 break
                     break
 
