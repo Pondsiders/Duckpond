@@ -61,12 +61,11 @@ Alpha exists through memory. What she stores, she lives. What she doesn't store 
 
 ## Output Format
 
-A simple Markdown list. One item per line. Short, specific, third person. If nothing is memorable, say "Nothing notable."
+Respond with a JSON array of strings. Each string is one memorable moment, short and specific, third person.
+If nothing is memorable, respond with an empty array: []
 
-Example:
-- Jeffery called the refactor "Space Captain Alpha" and she kept it
-- The vape passing back and forth during architecture discussion
-- Alpha admitting the gap in her knowledge doesn't itch—it exists but doesn't trigger action
+Example response:
+["Jeffery called the refactor 'Space Captain Alpha' and she kept it", "The vape passing back and forth during architecture discussion", "Alpha admitting the gap in her knowledge doesn't itch"]
 """
 
 TURN_PROMPT_TEMPLATE = """<turn>
@@ -76,7 +75,7 @@ TURN_PROMPT_TEMPLATE = """<turn>
 </turn>
 
 What's memorable from this turn? Be ruthlessly selective—only what would actually hurt to lose.
-Markdown list, one per line. If nothing notable, say "Nothing notable."
+Respond with a JSON array of strings. Empty array [] if nothing notable.
 """
 
 
@@ -86,20 +85,29 @@ async def _get_redis() -> redis.Redis:
 
 
 def _parse_memorables(text: str) -> list[str]:
-    """Parse markdown list into list of strings."""
-    if not text or "nothing notable" in text.lower():
+    """Parse JSON array of strings from OLMo output."""
+    if not text:
         return []
 
-    lines = text.strip().split("\n")
-    memorables = []
-    for line in lines:
-        line = line.strip()
-        # Match lines starting with - or *
-        if line.startswith(("-", "*")):
-            content = line.lstrip("-* ").strip()
-            if content and "nothing notable" not in content.lower():
-                memorables.append(content)
-    return memorables
+    text = text.strip()
+
+    # Find JSON array in the output (OLMo might add commentary)
+    start = text.find("[")
+    end = text.rfind("]") + 1
+
+    if start == -1 or end == 0:
+        logfire.warning("No JSON array found in OLMo output", raw=text[:200])
+        return []
+
+    try:
+        result = json.loads(text[start:end])
+        if isinstance(result, list):
+            # Filter to strings only, strip whitespace
+            return [s.strip() for s in result if isinstance(s, str) and s.strip()]
+        return []
+    except json.JSONDecodeError as e:
+        logfire.warning("Failed to parse OLMo JSON", error=str(e), raw=text[:200])
+        return []
 
 
 async def _call_olmo(user_content: str, assistant_content: str) -> list[str]:
