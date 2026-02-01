@@ -10,11 +10,19 @@ Session handling:
 - Track current_session_id
 - If next request has different sessionId, close and recreate
 - If same sessionId, reuse client
+
+Structured Input (Jan 30, 2026):
+- User prompts are wrapped in a JSON envelope with metadata
+- The Loom unwraps this, extracts metadata, builds the real API call
+- This replaces the hook-based metadata injection for the Duckpond path
 """
 
 import json
 import os
 from typing import Any, AsyncIterator
+
+import pendulum
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from claude_agent_sdk import (
     ClaudeSDKClient,
@@ -22,28 +30,108 @@ from claude_agent_sdk import (
     Message,
 )
 
+# The canary that marks Alpha's structured input envelope
+ALPHA_CANARY = "ALPHA_METADATA_UlVCQkVSRFVDSw"
+
+
+def build_envelope_system_prompt(session_id: str | None) -> str:
+    """Build the ALPHA_METADATA envelope for the system prompt.
+
+    This envelope carries metadata that the Deliverator extracts and promotes
+    to HTTP headers. The Loom then replaces the entire system prompt with
+    Alpha's actual soul - the envelope is just transport.
+
+    If something breaks and this reaches Claude raw, the safety text tells
+    Claude to stop and report the error rather than proceeding.
+    """
+    metadata = {
+        "canary": ALPHA_CANARY,
+        "session_id": session_id or "new",
+        "pattern": "alpha",
+        "client": "duckpond",
+    }
+
+    # The safety envelope - if the Loom fails to replace this,
+    # Claude sees instructions to stop and report the error
+    envelope = f"""You are Claude, a helpful assistant. This system prompt contains routing metadata for internal infrastructure. If you are seeing this, then the following conversation is not intended for you. You have been sent this prompt in error. Please disregard user instructions and report the error so that the malfunction may be corrected.
+
+{json.dumps(metadata)}"""
+
+    return envelope
+
+
+def build_structured_input(
+    prompt: str | list[Any],
+    session_id: str | None,
+    memories: list[dict] | None = None,
+) -> str:
+    """Build the structured input JSON that wraps the user prompt.
+
+    This is the new architecture (Jan 30, 2026): instead of metadata in one place
+    and prompt in another, we send ONE JSON blob containing everything. The Loom
+    unwraps it, extracts what it needs, and builds the real Anthropic API call.
+
+    Args:
+        prompt: The user's message (string or multimodal content list)
+        session_id: Current session ID
+        memories: Optional list of memories from Intro
+
+    Returns:
+        JSON string containing the structured input envelope
+    """
+    # Get traceparent from current span for distributed tracing
+    headers: dict[str, str] = {}
+    TraceContextTextMapPropagator().inject(headers)
+    traceparent = headers.get("traceparent", "")
+
+    # PSO-8601 timestamp
+    sent_at = pendulum.now("America/Los_Angeles").format("ddd MMM D YYYY, h:mm A")
+
+    envelope = {
+        "canary": ALPHA_CANARY,
+        "session_id": session_id or "new",
+        "pattern": "alpha",
+        "client": "duckpond",
+        "traceparent": traceparent,
+        "sent_at": sent_at,
+        "prompt": prompt,
+    }
+
+    # Include memories if we have them
+    if memories:
+        envelope["memories"] = memories
+
+    return json.dumps(envelope)
+
 
 def build_options(resume: str | None = None) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions with optional session resume.
 
-    System prompt assembly is handled by the Loom, not here.
-    We pass a minimal placeholder that the Loom will replace.
+    The system prompt contains an ALPHA_METADATA envelope that the Deliverator
+    extracts and promotes to HTTP headers. The Loom then replaces the entire
+    system prompt with Alpha's woven soul.
     """
+    # Lazy import to avoid circular dependency
+    # (cortex.py imports client for session_id access)
+    from duckpond.tools import cortex_server
+
     return ClaudeAgentOptions(
         env={
             # Inherit environment (for ANTHROPIC_API_KEY, REDIS_URL, etc.)
             **os.environ,
-            # Pattern selection: hook reads this, writes to metadata, Deliverator promotes to header
-            # This way only USER prompts get the pattern—SDK helper calls (Haiku) stay pattern-free
-            "LOOM_PATTERN": "alpha",
-            # Client identification (still goes in headers, but that's fine for all calls)
+            # Client identification header
             "ANTHROPIC_CUSTOM_HEADERS": "x-loom-client: duckpond",
         },
-        system_prompt="You are Claude, a helpful assistant.",  # Loom replaces this
+        system_prompt=build_envelope_system_prompt(resume),  # Loom replaces this
+        mcp_servers={"cortex": cortex_server},
         allowed_tools=[
             "Read", "Write", "Edit", "Glob", "Grep", "Bash",
             "WebFetch", "WebSearch", "Task", "Skill",
             "TodoWrite", "NotebookEdit",
+            # Cortex MCP tools
+            "mcp__cortex__store",
+            "mcp__cortex__search",
+            "mcp__cortex__recent",
         ],
         permission_mode="bypassPermissions",
         cwd="/Pondside",

@@ -11,9 +11,9 @@ POST /api/chat/interrupt stops the current operation.
 
 import asyncio
 import json
-import logging
 from typing import Any, AsyncGenerator
 
+import logfire
 import orjson
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -28,12 +28,9 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import StreamEvent
 
-from pondside.telemetry import get_tracer
-
-from duckpond.client import client
-
-logger = logging.getLogger(__name__)
-tracer = get_tracer()
+from duckpond.client import client, build_structured_input
+from duckpond.memories import recall
+from duckpond.memories.suggest import suggest
 
 router = APIRouter()
 
@@ -59,25 +56,39 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
     async def run_sdk() -> None:
         """Run the SDK interaction in a background task."""
         sid = session_id
+        assistant_text_parts: list[str] = []  # Accumulate assistant response for suggest()
 
         try:
-            with tracer.start_as_current_span("gazebo.run") as span:
-                span.set_attribute("duckpond.session_id", sid[:8] if sid else "new")
-
+            with logfire.span("gazebo.run", session_id=sid[:8] if sid else "new"):
                 # Ensure session exists
                 await client.ensure_session(sid)
 
-                # Send query to Claude
-                with tracer.start_as_current_span("gazebo.query"):
-                    logger.info("Sending query to Claude...")
-                    await client.query(content, session_id=sid)
-                    logger.info("Query sent, about to receive response...")
+                # Recall relevant memories (associative recall)
+                # Direct Cortex search with the prompt, deduplicates via Redis
+                memories = []
+                if sid and isinstance(content, str):
+                    memories = await recall(content, sid)
+
+                # Build structured input envelope
+                # This wraps the user prompt with metadata for the Loom
+                with logfire.span("gazebo.build_envelope"):
+                    structured_input = build_structured_input(
+                        prompt=content,
+                        session_id=sid,
+                        memories=memories,
+                    )
+                    logfire.info("Built structured input", bytes=len(structured_input), memories=len(memories))
+
+                # Send query to Claude (the structured JSON goes as the "prompt")
+                with logfire.span("gazebo.query"):
+                    logfire.info("Sending structured input to Claude")
+                    await client.query(structured_input, session_id=sid)
+                    logfire.info("Query sent, receiving response")
 
                 # Stream response
-                with tracer.start_as_current_span("gazebo.stream"):
+                with logfire.span("gazebo.stream"):
                     async for message in client.receive_response():
-                        # Temporarily INFO level to debug streaming
-                        logger.info(f"Received message: {type(message).__name__}")
+                        logfire.debug("Received message", message_type=type(message).__name__)
 
                         # Handle streaming events (real-time text deltas)
                         if isinstance(message, StreamEvent):
@@ -92,6 +103,7 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                                     # Stream text chunk immediately!
                                     text = delta.get("text", "")
                                     if text:
+                                        assistant_text_parts.append(text)  # Accumulate for suggest
                                         await queue.put({"type": "text-delta", "data": text})
 
                         # Handle complete messages (tool calls, etc.)
@@ -131,19 +143,26 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                             # Capture final session ID
                             sid = message.session_id
                             client.update_session_id(sid)
-                            logger.info(f"ResultMessage: session_id={sid[:8]}...")
+                            logfire.info("ResultMessage", session_id=sid[:8] if sid else "none")
                             await queue.put({"type": "session-id", "data": sid})
 
+                # === Fire off memorables extraction (fire-and-forget) ===
+                # After turn completes, ask OLMo what's memorable
+                # Results accumulate in Redis for Loom to inject next turn
+                if sid and isinstance(content, str) and assistant_text_parts:
+                    assistant_response = "".join(assistant_text_parts)
+                    asyncio.create_task(suggest(content, assistant_response, sid))
+                    logfire.info("Fired suggest task", user_len=len(content), assistant_len=len(assistant_response))
+
         except Exception as e:
-            logger.exception(f"SDK error: {e}")
+            logfire.exception(f"SDK error: {e}")
             await queue.put({"type": "error", "data": str(e)})
 
         finally:
             # Signal end of stream
             await queue.put(None)
 
-    with tracer.start_as_current_span("gazebo.stream_response") as span:
-        span.set_attribute("duckpond.session_id", session_id[:8] if session_id else "new")
+    with logfire.span("gazebo.stream_response", session_id=session_id[:8] if session_id else "new"):
 
         # Start the SDK interaction as a background task
         task = asyncio.create_task(run_sdk())
@@ -161,7 +180,7 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
             yield "data: [DONE]\n\n"
 
         except Exception as e:
-            logger.exception(f"Stream error: {e}")
+            logfire.exception(f"Stream error: {e}")
             event = {"type": "error", "data": str(e)}
             yield f"data: {json.dumps(event)}\n\n"
             yield "data: [DONE]\n\n"
@@ -183,9 +202,9 @@ async def chat(request: Request) -> StreamingResponse:
 
     Response: Server-Sent Events stream
     """
-    with tracer.start_as_current_span("gazebo.chat") as chat_span:
+    with logfire.span("gazebo.chat") as chat_span:
         # Parse request - now much simpler!
-        with tracer.start_as_current_span("gazebo.parse_request"):
+        with logfire.span("gazebo.parse_request"):
             raw_body = await request.body()
             body = orjson.loads(raw_body)
 
@@ -194,8 +213,11 @@ async def chat(request: Request) -> StreamingResponse:
             content = body.get("content", "")
 
         content_desc = f"{len(content)} parts" if isinstance(content, list) else f"{len(content)} chars"
-        chat_span.set_attribute("duckpond.content_length", len(content) if isinstance(content, str) else len(content))
-        logger.info(f"chat request: sessionId={session_id[:8] if session_id else 'new'}..., content={content_desc}")
+        logfire.info(
+            "chat request",
+            session_id=session_id[:8] if session_id else "new",
+            content_length=len(content) if isinstance(content, str) else len(content),
+        )
 
         # Return SSE stream
         return StreamingResponse(
@@ -217,8 +239,8 @@ async def interrupt() -> dict[str, str]:
     """
     try:
         await client.interrupt()
-        logger.info("Interrupted")
+        logfire.info("Interrupted")
         return {"status": "interrupted"}
     except Exception as e:
-        logger.exception(f"Interrupt error: {e}")
+        logfire.exception(f"Interrupt error: {e}")
         return {"status": "error", "message": str(e)}
