@@ -21,6 +21,10 @@ SESSIONS_DIR = Path(os.path.expanduser("~/.claude/projects/-Pondside"))
 # Canary that marks Duckpond's metadata envelope
 ALPHA_METADATA_CANARY = "ALPHA_METADATA_UlVCQkVSRFVDSw"
 
+# Pattern for memory blocks (injected by Gazebo for recall)
+import re
+MEMORY_BLOCK_PATTERN = re.compile(r"^Memory #\d+\s*\([^)]+\):", re.MULTILINE)
+
 
 def unwrap_alpha_metadata(text: str) -> str:
     """Unwrap ALPHA_METADATA envelope if present, returning just the prompt.
@@ -44,6 +48,16 @@ def unwrap_alpha_metadata(text: str) -> str:
         pass
 
     return text
+
+
+def is_memory_block(text: str) -> bool:
+    """Check if a text block is a memory injection (should be hidden on display)."""
+    return bool(MEMORY_BLOCK_PATTERN.match(text.strip()))
+
+
+def is_metadata_block(text: str) -> bool:
+    """Check if a text block is a metadata envelope (should be hidden on display)."""
+    return ALPHA_METADATA_CANARY in text
 
 
 def extract_display_messages(lines: list[str]) -> list[dict[str, Any]]:
@@ -77,12 +91,19 @@ def extract_display_messages(lines: list[str]) -> list[dict[str, Any]]:
                 has_tool_results = False
                 for block in content:
                     if isinstance(block, str):
+                        # Skip memory blocks and metadata blocks
+                        if is_memory_block(block) or is_metadata_block(block):
+                            continue
                         parts.append({"type": "text", "text": block})
                     elif isinstance(block, dict):
                         block_type = block.get("type")
                         if block_type == "text":
-                            # Unwrap ALPHA_METADATA envelope if present
-                            text = unwrap_alpha_metadata(block.get("text", ""))
+                            text = block.get("text", "")
+                            # Skip memory blocks and metadata blocks
+                            if is_memory_block(text) or is_metadata_block(text):
+                                continue
+                            # Unwrap ALPHA_METADATA envelope if present (old format)
+                            text = unwrap_alpha_metadata(text)
                             parts.append({"type": "text", "text": text})
                         elif block_type == "image":
                             # Convert Claude API format to data URL for frontend

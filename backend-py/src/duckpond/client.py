@@ -60,48 +60,97 @@ def build_envelope_system_prompt(session_id: str | None) -> str:
     return envelope
 
 
+def _format_memory_block(memory: dict) -> str:
+    """Format a memory for inclusion as a content block.
+
+    Creates human-readable memory text with relative timestamps.
+    """
+    mem_id = memory.get("id", "?")
+    created_at = memory.get("created_at", "")
+    content = memory.get("content", "").strip()
+    score = memory.get("score")
+
+    # Simple relative time formatting
+    relative_time = created_at  # fallback
+    try:
+        dt = pendulum.parse(created_at)
+        now = pendulum.now(dt.timezone or "America/Los_Angeles")
+        diff = now.diff(dt)
+        if diff.in_days() == 0:
+            relative_time = f"today at {dt.format('h:mm A')}"
+        elif diff.in_days() == 1:
+            relative_time = f"yesterday at {dt.format('h:mm A')}"
+        elif diff.in_days() < 7:
+            relative_time = f"{diff.in_days()} days ago"
+        elif diff.in_days() < 30:
+            weeks = diff.in_days() // 7
+            relative_time = f"{weeks} week{'s' if weeks > 1 else ''} ago"
+        else:
+            relative_time = dt.format("ddd MMM D YYYY")
+    except Exception:
+        pass
+
+    # Include score if present (helps with debugging/transparency)
+    score_str = f", score {score:.2f}" if score else ""
+    return f"Memory #{mem_id} ({relative_time}{score_str}):\n{content}"
+
+
 def build_structured_input(
     prompt: str | list[Any],
     session_id: str | None,
     memories: list[dict] | None = None,
-) -> str:
-    """Build the structured input JSON that wraps the user prompt.
+) -> list[dict[str, Any]]:
+    """Build structured input as a content array.
 
-    This is the new architecture (Jan 30, 2026): instead of metadata in one place
-    and prompt in another, we send ONE JSON blob containing everything. The Loom
-    unwraps it, extracts what it needs, and builds the real Anthropic API call.
+    Architecture (Feb 2, 2026): Content array with three sections:
+    1. User content (text, images, whatever the user sent)
+    2. Memory blocks (human-readable, permanent part of transcript)
+    3. Metadata block (canary, session_id, traceparent — Loom removes this)
+
+    Memories are added as content blocks directly, not stuffed into metadata.
+    This makes them a permanent, readable part of the conversation history.
 
     Args:
-        prompt: The user's message (string or multimodal content list)
+        prompt: The user's message (string or list of content blocks)
         session_id: Current session ID
-        memories: Optional list of memories from Intro
+        memories: Optional list of memories from recall
 
     Returns:
-        JSON string containing the structured input envelope
+        List of content blocks: [user_content, memories, metadata]
     """
-    # Get traceparent from current span for distributed tracing
+    content_blocks: list[dict[str, Any]] = []
+
+    # 1. Add user's actual content (text, images, whatever)
+    if isinstance(prompt, str):
+        content_blocks.append({"type": "text", "text": prompt})
+    else:
+        # Already a list of content blocks - copy to avoid mutating original
+        content_blocks.extend(list(prompt))
+
+    # 2. Add memory blocks (formatted, human-readable, permanent)
+    if memories:
+        for mem in memories:
+            memory_text = _format_memory_block(mem)
+            content_blocks.append({"type": "text", "text": memory_text})
+
+    # 3. Build and add metadata block (Loom will remove this)
     headers: dict[str, str] = {}
     TraceContextTextMapPropagator().inject(headers)
     traceparent = headers.get("traceparent", "")
-
-    # PSO-8601 timestamp
     sent_at = pendulum.now("America/Los_Angeles").format("ddd MMM D YYYY, h:mm A")
 
-    envelope = {
+    metadata = {
         "canary": ALPHA_CANARY,
         "session_id": session_id or "new",
         "pattern": "alpha",
         "client": "duckpond",
         "traceparent": traceparent,
         "sent_at": sent_at,
-        "prompt": prompt,
+        # NOTE: No "memories" field - memories are content blocks now
     }
+    content_blocks.append({"type": "text", "text": json.dumps(metadata)})
 
-    # Include memories if we have them
-    if memories:
-        envelope["memories"] = memories
-
-    return json.dumps(envelope)
+    return content_blocks
 
 
 def build_options(resume: str | None = None) -> ClaudeAgentOptions:

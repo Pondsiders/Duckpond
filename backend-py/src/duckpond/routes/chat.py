@@ -36,6 +36,23 @@ from duckpond.memories.suggest import suggest
 router = APIRouter()
 
 
+def extract_text_from_content(content: str | list[Any]) -> str:
+    """Extract text from content (string or multipart content blocks).
+
+    For recall/suggest, we need just the text portion of the user's message.
+    Images and other non-text blocks are ignored for memory operations.
+    """
+    if isinstance(content, str):
+        return content
+
+    # Multipart: extract text from text blocks
+    texts = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            texts.append(block.get("text", ""))
+    return "\n".join(texts)
+
+
 async def stream_sse_events(content: str | list[Any], session_id: str | None) -> AsyncGenerator[str, None]:
     """Stream Claude's response as SSE events.
 
@@ -67,8 +84,9 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                 # Recall relevant memories (associative recall)
                 # Direct Cortex search with the prompt, deduplicates via Redis
                 memories = []
-                if sid and isinstance(content, str):
-                    memories = await recall(content, sid)
+                user_text = extract_text_from_content(content)
+                if sid and user_text.strip():
+                    memories = await recall(user_text, sid)
 
                 # Build structured input envelope
                 # This wraps the user prompt with metadata for the Loom
@@ -78,7 +96,7 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                         session_id=sid,
                         memories=memories,
                     )
-                    logfire.info("Built structured input", bytes=len(structured_input), memories=len(memories))
+                    logfire.info("Built structured input", blocks=len(structured_input), memories=len(memories))
 
                 # Send query to Claude (the structured JSON goes as the "prompt")
                 with logfire.span("gazebo.query"):
@@ -150,10 +168,11 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                 # === Fire off memorables extraction (fire-and-forget) ===
                 # After turn completes, ask OLMo what's memorable
                 # Results accumulate in Redis for Loom to inject next turn
-                if sid and isinstance(content, str) and assistant_text_parts:
+                user_text = extract_text_from_content(content)
+                if sid and user_text.strip() and assistant_text_parts:
                     assistant_response = "".join(assistant_text_parts)
-                    asyncio.create_task(suggest(content, assistant_response, sid))
-                    logfire.info("Fired suggest task", user_len=len(content), assistant_len=len(assistant_response))
+                    asyncio.create_task(suggest(user_text, assistant_response, sid))
+                    logfire.info("Fired suggest task", user_len=len(user_text), assistant_len=len(assistant_response))
 
                 # === Archive the turn to Scribe ===
                 # Records user and assistant messages to Postgres
