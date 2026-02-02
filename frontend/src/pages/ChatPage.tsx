@@ -41,7 +41,7 @@ const fontScale = 1.25;
 // -----------------------------------------------------------------------------
 
 interface StreamEvent {
-  type: "text-delta" | "text" | "tool-call" | "tool-result" | "session-id" | "done" | "error";
+  type: "text-delta" | "text" | "tool-call" | "tool-result" | "session-id" | "done" | "error" | "archive-error";
   data: unknown;
 }
 
@@ -313,6 +313,13 @@ function ThreadView() {
 
             case "error":
               console.error("[Duckpond] Stream error:", event.data);
+              break;
+
+            case "archive-error":
+              // Scribe archiving failed - alert the user
+              console.error("[Duckpond] Archive failed:", event.data);
+              // TODO: Replace with toast component (sonner)
+              window.alert(`⚠️ Message archiving failed: ${event.data}`);
               break;
 
             case "done":

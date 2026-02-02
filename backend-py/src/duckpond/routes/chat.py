@@ -28,6 +28,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import StreamEvent
 
+from duckpond.archive import archive_turn
 from duckpond.client import client, build_structured_input
 from duckpond.memories import recall
 from duckpond.memories.suggest import suggest
@@ -153,6 +154,15 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                     assistant_response = "".join(assistant_text_parts)
                     asyncio.create_task(suggest(content, assistant_response, sid))
                     logfire.info("Fired suggest task", user_len=len(content), assistant_len=len(assistant_response))
+
+                # === Archive the turn to Scribe ===
+                # Records user and assistant messages to Postgres
+                # Awaited because we want to know immediately if archiving fails
+                if assistant_text_parts:
+                    assistant_response = "".join(assistant_text_parts)
+                    archive_result = await archive_turn(content, assistant_response, sid)
+                    if not archive_result.success:
+                        await queue.put({"type": "archive-error", "data": archive_result.error})
 
         except Exception as e:
             logfire.exception(f"SDK error: {e}")
