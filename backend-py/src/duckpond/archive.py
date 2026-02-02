@@ -4,19 +4,27 @@ Records user and assistant messages to scribe.messages as turns complete.
 This replaces the old hook-based Scribe that read from Claude Code transcripts.
 
 Messages are inserted with timestamps, roles, and session IDs.
-Embeddings are handled separately (can be backfilled later).
+Embeddings are generated asynchronously after insert (fire-and-forget).
 """
 
+import asyncio
+import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 import logfire
 import psycopg
 
-# Database connection from environment
+logger = logging.getLogger(__name__)
+
+# Configuration from environment
 DATABASE_URL = os.environ.get("DATABASE_URL")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://primer:11434")
+EMBED_MODEL = "nomic-embed-text"
+EMBED_TIMEOUT = 10.0  # seconds
 
 
 @dataclass
@@ -26,6 +34,7 @@ class ArchiveResult:
     success: bool
     error: str | None = None
     rows_inserted: int = 0
+    row_ids: list[int] = field(default_factory=list)
 
 
 def _extract_text_content(content: str | list[Any]) -> str:
@@ -42,6 +51,78 @@ def _extract_text_content(content: str | list[Any]) -> str:
     return "\n".join(texts)
 
 
+async def _embed_text(text: str) -> list[float] | None:
+    """Generate embedding for text via Ollama.
+
+    Returns None on any failure (logged but not raised).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
+            response = await client.post(
+                f"{OLLAMA_URL}/api/embeddings",
+                json={
+                    "model": EMBED_MODEL,
+                    "prompt": f"search_document: {text}",
+                    "keep_alive": -1,
+                },
+            )
+            response.raise_for_status()
+            return response.json()["embedding"]
+    except Exception as e:
+        logfire.error("Embedding failed", error=str(e))
+        return None
+
+
+async def _embed_and_update(row_id: int, content: str) -> bool:
+    """Embed content and update the row. Returns success status."""
+    with logfire.span("archive.embed", row_id=row_id, content_len=len(content)):
+        embedding = await _embed_text(content)
+        if embedding is None:
+            return False
+
+        try:
+            # Update the row with the embedding
+            with psycopg.connect(DATABASE_URL) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE scribe.messages
+                        SET embedding = %s::vector
+                        WHERE id = %s
+                        """,
+                        (embedding, row_id),
+                    )
+                conn.commit()
+
+            logger.debug(f"Embedded row {row_id}")
+            return True
+
+        except Exception as e:
+            logfire.error("Embed update failed", row_id=row_id, error=str(e))
+            return False
+
+
+async def _embed_rows(row_ids: list[int], contents: list[str]) -> None:
+    """Embed multiple rows in parallel. Fire-and-forget, logs results."""
+    if not row_ids:
+        return
+
+    with logfire.span("archive.embed_batch", count=len(row_ids)):
+        tasks = [
+            _embed_and_update(row_id, content)
+            for row_id, content in zip(row_ids, contents)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        successes = sum(1 for r in results if r is True)
+        failures = len(results) - successes
+
+        if failures > 0:
+            logfire.error("Embedding batch had failures", successes=successes, failures=failures)
+        else:
+            logger.debug(f"Embedded {successes} rows successfully")
+
+
 async def archive_turn(
     user_content: str | list[Any],
     assistant_content: str,
@@ -52,6 +133,7 @@ async def archive_turn(
 
     Inserts one row for the user message and one for the assistant response.
     Uses ON CONFLICT to avoid duplicates (keyed on timestamp + role + content hash).
+    After successful insert, fires off async embedding (non-blocking).
 
     Args:
         user_content: The user's message (string or list of content blocks)
@@ -60,7 +142,7 @@ async def archive_turn(
         timestamp: When the turn occurred (defaults to now)
 
     Returns:
-        ArchiveResult with success status and any error message
+        ArchiveResult with success status, row IDs, and any error message
     """
     if not DATABASE_URL:
         return ArchiveResult(success=False, error="DATABASE_URL not configured")
@@ -83,35 +165,52 @@ async def archive_turn(
         try:
             # Build rows to insert
             rows: list[tuple[datetime, str, str, str | None]] = []
+            contents: list[str] = []  # For embedding later
 
             if user_text.strip():
                 rows.append((timestamp, "human", user_text, session_id))
+                contents.append(user_text)
 
             if assistant_content.strip():
                 # Slight offset for assistant timestamp to maintain ordering
                 assistant_ts = timestamp.replace(microsecond=timestamp.microsecond + 1)
                 rows.append((assistant_ts, "assistant", assistant_content, session_id))
+                contents.append(assistant_content)
 
             if not rows:
                 return ArchiveResult(success=True, rows_inserted=0)
 
-            # Insert into Postgres
-            # Using sync psycopg in a span - it's fast enough for 2 rows
+            # Insert into Postgres, returning IDs
+            row_ids: list[int] = []
             with psycopg.connect(DATABASE_URL) as conn:
                 with conn.cursor() as cur:
-                    cur.executemany(
-                        """
-                        INSERT INTO scribe.messages (timestamp, role, content, session_id)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (timestamp, role, md5(content)) DO NOTHING
-                        """,
-                        rows,
-                    )
+                    for row in rows:
+                        cur.execute(
+                            """
+                            INSERT INTO scribe.messages (timestamp, role, content, session_id)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (timestamp, role, md5(content)) DO NOTHING
+                            RETURNING id
+                            """,
+                            row,
+                        )
+                        result = cur.fetchone()
+                        if result:
+                            row_ids.append(result[0])
                 conn.commit()
 
             sid_short = session_id[:8] if session_id else "none"
-            logfire.info("Archived turn", rows=len(rows), session_id=sid_short)
-            return ArchiveResult(success=True, rows_inserted=len(rows))
+            logfire.info("Archived turn", rows=len(row_ids), session_id=sid_short)
+
+            # Fire off embedding task (non-blocking)
+            if row_ids:
+                asyncio.create_task(_embed_rows(row_ids, contents))
+
+            return ArchiveResult(
+                success=True,
+                rows_inserted=len(row_ids),
+                row_ids=row_ids,
+            )
 
         except Exception as e:
             error_msg = f"Archive failed: {e}"
