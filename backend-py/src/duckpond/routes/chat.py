@@ -1,12 +1,20 @@
 """Chat route - the main conversation endpoint.
 
-EXPERIMENT: Using our own queue/task pattern instead of assistant-stream's create_run().
-Testing whether the background task pattern is what makes SDK client reuse work.
-
 Frontend sends minimal payload { sessionId, content }, we stream back SSE events.
 
 POST /api/chat handles sending messages and streaming responses.
 POST /api/chat/interrupt stops the current operation.
+
+AlphaClient (via alpha_sdk) handles everything:
+- Soul injection and orientation
+- Memory recall and suggest
+- Compact prompt rewriting
+- Turn archiving
+- Observability spans
+
+Gazebo just needs to:
+1. Pass user content to client.query()
+2. Translate client.stream() messages to SSE events
 """
 
 import asyncio
@@ -22,91 +30,47 @@ from claude_agent_sdk import (
     AssistantMessage,
     UserMessage,
     ResultMessage,
-    TextBlock,
     ToolUseBlock,
     ToolResultBlock,
 )
 from claude_agent_sdk.types import StreamEvent
 
-from duckpond.archive import archive_turn
-from duckpond.client import client, build_structured_input
-from duckpond.memories import recall
-from duckpond.memories.suggest import suggest
+from duckpond.client import client
 
 router = APIRouter()
-
-
-def extract_text_from_content(content: str | list[Any]) -> str:
-    """Extract text from content (string or multipart content blocks).
-
-    For recall/suggest, we need just the text portion of the user's message.
-    Images and other non-text blocks are ignored for memory operations.
-    """
-    if isinstance(content, str):
-        return content
-
-    # Multipart: extract text from text blocks
-    texts = []
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "text":
-            texts.append(block.get("text", ""))
-    return "\n".join(texts)
 
 
 async def stream_sse_events(content: str | list[Any], session_id: str | None) -> AsyncGenerator[str, None]:
     """Stream Claude's response as SSE events.
 
-    Uses our own queue/task pattern: SDK calls run in a background task,
-    results flow through an asyncio.Queue, this generator reads from the queue.
-
     Event types:
     - text-delta: { type: "text-delta", data: "..." }  -- streaming text chunks
-    - text: { type: "text", data: "..." }  -- complete text block (fallback)
     - tool-call: { type: "tool-call", data: { toolCallId, toolName, args, argsText } }
     - tool-result: { type: "tool-result", data: { toolCallId, result, isError } }
     - session-id: { type: "session-id", data: "..." }
+    - context: { type: "context", data: { count, window } }  -- token count update
     - error: { type: "error", data: "..." }
     - done: data: [DONE]
     """
-    # The queue connects the background task to the response generator
     queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
     async def run_sdk() -> None:
         """Run the SDK interaction in a background task."""
         sid = session_id
-        assistant_text_parts: list[str] = []  # Accumulate assistant response for suggest()
 
         try:
             with logfire.span("gazebo.run", session_id=sid[:8] if sid else "new"):
                 # Ensure session exists
                 await client.ensure_session(sid)
 
-                # Recall relevant memories (associative recall)
-                # Direct Cortex search with the prompt, deduplicates via Redis
-                memories = []
-                user_text = extract_text_from_content(content)
-                if sid and user_text.strip():
-                    memories = await recall(user_text, sid)
-
-                # Build structured input envelope
-                # This wraps the user prompt with metadata for the Loom
-                with logfire.span("gazebo.build_envelope"):
-                    structured_input = build_structured_input(
-                        prompt=content,
-                        session_id=sid,
-                        memories=memories,
-                    )
-                    logfire.info("Built structured input", blocks=len(structured_input), memories=len(memories))
-
-                # Send query to Claude (the structured JSON goes as the "prompt")
+                # Send query to AlphaClient
+                # (AlphaClient handles recall, orientation, soul injection internally)
                 with logfire.span("gazebo.query"):
-                    logfire.info("Sending structured input to Claude")
-                    await client.query(structured_input, session_id=sid)
-                    logfire.info("Query sent, receiving response")
+                    await client.query(content, session_id=sid)
 
                 # Stream response
                 with logfire.span("gazebo.stream"):
-                    async for message in client.receive_response():
+                    async for message in client.stream():
                         logfire.debug("Received message", message_type=type(message).__name__)
 
                         # Handle streaming events (real-time text deltas)
@@ -119,18 +83,14 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                                 delta_type = delta.get("type")
 
                                 if delta_type == "text_delta":
-                                    # Stream text chunk immediately!
                                     text = delta.get("text", "")
                                     if text:
-                                        assistant_text_parts.append(text)  # Accumulate for suggest
                                         await queue.put({"type": "text-delta", "data": text})
 
                         # Handle complete messages (tool calls, etc.)
                         elif isinstance(message, AssistantMessage):
                             for block in message.content:
-                                # NOTE: We skip TextBlock here because we already streamed
-                                # the text via StreamEvent text_delta events above.
-                                # Only handle tool calls from AssistantMessage.
+                                # Only handle tool calls - text was already streamed
                                 if isinstance(block, ToolUseBlock):
                                     await queue.put({
                                         "type": "tool-call",
@@ -143,7 +103,7 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                                     })
 
                         elif isinstance(message, UserMessage):
-                            # Tool results come through as UserMessage with ToolResultBlock
+                            # Tool results come through as UserMessage
                             if hasattr(message, "content"):
                                 content_blocks = message.content
                                 if isinstance(content_blocks, list):
@@ -165,57 +125,40 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                             logfire.info("ResultMessage", session_id=sid[:8] if sid else "none")
                             await queue.put({"type": "session-id", "data": sid})
 
-                # === Fire off memorables extraction (fire-and-forget) ===
-                # After turn completes, ask OLMo what's memorable
-                # Results accumulate in Redis for Loom to inject next turn
-                user_text = extract_text_from_content(content)
-                if sid and user_text.strip() and assistant_text_parts:
-                    assistant_response = "".join(assistant_text_parts)
-                    asyncio.create_task(suggest(user_text, assistant_response, sid))
-                    logfire.info("Fired suggest task", user_len=len(user_text), assistant_len=len(assistant_response))
-
-                # === Archive the turn to Scribe ===
-                # Records user and assistant messages to Postgres
-                # Awaited because we want to know immediately if archiving fails
-                if assistant_text_parts:
-                    assistant_response = "".join(assistant_text_parts)
-                    archive_result = await archive_turn(content, assistant_response, sid)
-                    if not archive_result.success:
-                        await queue.put({"type": "archive-error", "data": archive_result.error})
+                # After turn: send token count for context-o-meter
+                token_count = client.token_count
+                context_window = client.context_window
+                if token_count > 0:
+                    await queue.put({
+                        "type": "context",
+                        "data": {"count": token_count, "window": context_window}
+                    })
 
         except Exception as e:
             logfire.exception(f"SDK error: {e}")
             await queue.put({"type": "error", "data": str(e)})
 
         finally:
-            # Signal end of stream
             await queue.put(None)
 
     with logfire.span("gazebo.stream_response", session_id=session_id[:8] if session_id else "new"):
-
-        # Start the SDK interaction as a background task
         task = asyncio.create_task(run_sdk())
 
         try:
-            # Read from queue and yield SSE events
             while True:
                 event = await queue.get()
                 if event is None:
-                    # End of stream
                     break
                 yield f"data: {json.dumps(event)}\n\n"
 
-            # Done
             yield "data: [DONE]\n\n"
 
         except Exception as e:
             logfire.exception(f"Stream error: {e}")
-            event = {"type": "error", "data": str(e)}
-            yield f"data: {json.dumps(event)}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'data': str(e)})}\n\n"
             yield "data: [DONE]\n\n"
 
         finally:
-            # Make sure the background task completes
             await task
 
 
@@ -223,49 +166,39 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
 async def chat(request: Request) -> StreamingResponse:
     """Handle chat messages and stream responses via SSE.
 
-    Request body (new minimal format):
+    Request body:
     {
         "sessionId": "optional-session-id",
-        "content": "user message text"
+        "content": "user message text" or [content blocks]
     }
-
-    Response: Server-Sent Events stream
     """
-    with logfire.span("gazebo.chat") as chat_span:
-        # Parse request - now much simpler!
-        with logfire.span("gazebo.parse_request"):
-            raw_body = await request.body()
-            body = orjson.loads(raw_body)
+    with logfire.span("gazebo.chat"):
+        raw_body = await request.body()
+        body = orjson.loads(raw_body)
 
-            # New format: { sessionId, content }
-            session_id = body.get("sessionId")
-            content = body.get("content", "")
+        session_id = body.get("sessionId")
+        content = body.get("content", "")
 
-        content_desc = f"{len(content)} parts" if isinstance(content, list) else f"{len(content)} chars"
         logfire.info(
             "chat request",
             session_id=session_id[:8] if session_id else "new",
             content_length=len(content) if isinstance(content, str) else len(content),
         )
 
-        # Return SSE stream
         return StreamingResponse(
             stream_sse_events(content, session_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",  # Disable nginx buffering
+                "X-Accel-Buffering": "no",
             }
         )
 
 
 @router.post("/api/chat/interrupt")
 async def interrupt() -> dict[str, str]:
-    """Interrupt the current operation.
-
-    Call this when the user hits the stop button.
-    """
+    """Interrupt the current operation."""
     try:
         await client.interrupt()
         logfire.info("Interrupted")
