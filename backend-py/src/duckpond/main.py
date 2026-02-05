@@ -28,7 +28,7 @@ logging.getLogger("opentelemetry.context").setLevel(logging.CRITICAL)
 # Scrubbing disabled - too aggressive (redacts "session", "auth", etc.)
 # Our logs are authenticated with 30-day retention; acceptable risk for debugging visibility
 logfire.configure(
-    service_name="gazebo",
+    service_name="duckpond",
     distributed_tracing=True,
     scrubbing=False,
 )
