@@ -84,8 +84,11 @@ class DuckpondClient:
 
     async def _create_client(self, session_id: str | None) -> None:
         """Create a new AlphaClient, optionally resuming a session."""
-        # Create Cortex MCP server with session ID provider
-        cortex_server = create_cortex_server(lambda: self._current_session_id)
+        # Create Cortex MCP server with session ID provider and memorables clearer
+        cortex_server = create_cortex_server(
+            get_session_id=lambda: self._current_session_id,
+            clear_memorables=lambda: self._client.clear_memorables() if self._client else 0,
+        )
 
         self._client = AlphaClient(
             cwd="/Pondside",
