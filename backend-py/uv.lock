@@ -137,7 +137,7 @@ wheels = [
 [[package]]
 name = "alpha-sdk"
 version = "0.5.0"
-source = { directory = "../../../Basement/alpha_sdk" }
+source = { editable = "../../../Basement/alpha_sdk" }
 dependencies = [
     { name = "aiohttp" },
     { name = "asyncpg" },
@@ -601,7 +601,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "alpha-sdk", directory = "../../../Basement/alpha_sdk" },
+    { name = "alpha-sdk", editable = "../../../Basement/alpha_sdk" },
     { name = "assistant-stream", specifier = ">=0.0.31" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "jinja2", specifier = ">=3.0.0" },

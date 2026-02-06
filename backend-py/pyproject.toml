@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
-    "alpha-sdk @ file:///Pondside/Basement/alpha_sdk",  # The grand unified Alpha library
+    "alpha-sdk",
     "assistant-stream>=0.0.31",
     "redis>=5.0.0",
     "pendulum>=3.0.0",
@@ -43,3 +43,8 @@ select = ["E", "F", "I", "W"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[tool.uv.sources]
+# Local editable for dev. For deployment: swap to git+tag
+# alpha-sdk = { git = "https://github.com/Pondsiders/alpha_sdk.git", tag = "v0.5.0" }
+alpha-sdk = { path = "../../../Basement/alpha_sdk", editable = true }
