@@ -63,6 +63,15 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                 # Ensure session exists
                 await client.ensure_session(sid)
 
+                # Wire up token count callback for this turn's SSE stream
+                async def on_token_count(count: int, window: int) -> None:
+                    await queue.put({
+                        "type": "context",
+                        "data": {"count": count, "window": window}
+                    })
+
+                client.set_token_count_callback(on_token_count)
+
                 # Send query to AlphaClient
                 # (AlphaClient handles recall, orientation, soul injection internally)
                 with logfire.span("gazebo.query"):

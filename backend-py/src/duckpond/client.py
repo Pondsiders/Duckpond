@@ -62,6 +62,14 @@ class DuckpondClient:
             return self._client.context_window
         return 200_000
 
+    def set_token_count_callback(self, callback) -> None:
+        """Set the token count callback on the underlying AlphaClient.
+
+        Called per-turn with a closure over the current SSE queue.
+        """
+        if self._client:
+            self._client.set_token_count_callback(callback)
+
     async def ensure_session(self, session_id: str | None) -> None:
         """Ensure we have a client connected to the right session.
 

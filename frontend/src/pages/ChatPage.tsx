@@ -41,7 +41,7 @@ const fontScale = 1.25;
 // -----------------------------------------------------------------------------
 
 interface StreamEvent {
-  type: "text-delta" | "text" | "tool-call" | "tool-result" | "session-id" | "done" | "error" | "archive-error";
+  type: "text-delta" | "text" | "tool-call" | "tool-result" | "session-id" | "context" | "done" | "error" | "archive-error";
   data: unknown;
 }
 
@@ -310,6 +310,12 @@ function ThreadView() {
             case "session-id":
               setSessionId(event.data as string);
               break;
+
+            case "context": {
+              const ctx = event.data as { count: number; window: number };
+              setInputTokens(ctx.count);
+              break;
+            }
 
             case "error":
               console.error("[Duckpond] Stream error:", event.data);
