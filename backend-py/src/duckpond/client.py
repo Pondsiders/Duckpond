@@ -100,7 +100,7 @@ class DuckpondClient:
 
         self._client = AlphaClient(
             cwd="/Pondside",
-            client_name="gazebo",
+            client_name="duckpond",
             permission_mode="bypassPermissions",
             mcp_servers={"cortex": cortex_server},
             allowed_tools=[

@@ -21,7 +21,7 @@ SESSIONS_DIR = Path(os.path.expanduser("~/.claude/projects/-Pondside"))
 # Canary that marks Duckpond's metadata envelope
 ALPHA_METADATA_CANARY = "ALPHA_METADATA_UlVCQkVSRFVDSw"
 
-# Pattern for memory blocks (injected by Gazebo for recall)
+# Pattern for memory blocks (injected by Duckpond for recall)
 import re
 MEMORY_BLOCK_PATTERN = re.compile(r"^Memory #\d+\s*\([^)]+\):", re.MULTILINE)
 

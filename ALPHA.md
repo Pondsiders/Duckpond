@@ -1,6 +1,6 @@
 ---
 autoload: when
-when: "working on or discussing Duckpond, Gazebo, the chat interface, memories.recall, memories.suggest"
+when: "working on or discussing Duckpond, the chat interface, memories.recall, memories.suggest"
 ---
 
 ## Development Commands
@@ -100,4 +100,4 @@ User prompts are wrapped in a JSON envelope with metadata. The Loom (via ANTHROP
 
 ## Observability
 
-Backend is instrumented with Logfire (wraps OpenTelemetry). Distributed tracing via `traceparent` header propagation. Service name: `gazebo`.
+Backend is instrumented with Logfire (wraps OpenTelemetry). Distributed tracing via `traceparent` header propagation. Service name: `duckpond`.

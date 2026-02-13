@@ -12,7 +12,7 @@ AlphaClient (via alpha_sdk) handles everything:
 - Turn archiving
 - Observability spans
 
-Gazebo just needs to:
+Duckpond just needs to:
 1. Pass user content to client.query()
 2. Translate client.stream() messages to SSE events
 """
@@ -59,7 +59,7 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
         sid = session_id
 
         try:
-            with logfire.span("gazebo.run", session_id=sid[:8] if sid else "new"):
+            with logfire.span("duckpond.run", session_id=sid[:8] if sid else "new"):
                 # Ensure session exists
                 await client.ensure_session(sid)
 
@@ -74,11 +74,11 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
 
                 # Send query to AlphaClient
                 # (AlphaClient handles recall, orientation, soul injection internally)
-                with logfire.span("gazebo.query"):
+                with logfire.span("duckpond.query"):
                     await client.query(content, session_id=sid)
 
                 # Stream response
-                with logfire.span("gazebo.stream"):
+                with logfire.span("duckpond.stream"):
                     async for message in client.stream():
                         logfire.debug("Received message", message_type=type(message).__name__)
 
@@ -150,7 +150,7 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
         finally:
             await queue.put(None)
 
-    with logfire.span("gazebo.stream_response", session_id=session_id[:8] if session_id else "new"):
+    with logfire.span("duckpond.stream_response", session_id=session_id[:8] if session_id else "new"):
         task = asyncio.create_task(run_sdk())
 
         try:
@@ -181,7 +181,7 @@ async def chat(request: Request) -> StreamingResponse:
         "content": "user message text" or [content blocks]
     }
     """
-    with logfire.span("gazebo.chat"):
+    with logfire.span("duckpond.chat"):
         raw_body = await request.body()
         body = orjson.loads(raw_body)
 
