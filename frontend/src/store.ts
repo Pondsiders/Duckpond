@@ -25,6 +25,7 @@ export type JSONObject = { [key: string]: JSONValue };
 
 // Content part types (mutable for immer)
 export type TextPart = { type: "text"; text: string };
+export type ThinkingPart = { type: "thinking"; thinking: string };
 export type ImagePart = { type: "image"; image: string };
 export type ToolCallPart = {
   type: "tool-call";
@@ -35,7 +36,7 @@ export type ToolCallPart = {
   result?: JSONValue;
   isError?: boolean;
 };
-export type ContentPart = TextPart | ImagePart | ToolCallPart;
+export type ContentPart = TextPart | ThinkingPart | ImagePart | ToolCallPart;
 
 // Our internal message format
 export interface Message {
@@ -72,6 +73,7 @@ interface GazeboActions {
   addUserMessage: (content: string, attachments?: Attachment[]) => string; // Returns message ID
   addAssistantPlaceholder: () => string; // Returns message ID
   appendToAssistant: (messageId: string, text: string) => void;
+  appendThinking: (messageId: string, thinking: string) => void;
   addToolCall: (messageId: string, toolCall: Omit<ToolCallPart, "type">) => void;
   updateToolResult: (
     messageId: string,
@@ -179,6 +181,24 @@ export const useGazeboStore = create<GazeboStore>()(
         } else {
           // New text part (after a tool call, or first text in message)
           message.content.push({ type: "text", text });
+        }
+      });
+    },
+
+    appendThinking: (messageId, thinking) => {
+      set((state) => {
+        const message = state.messages.find((m) => m.id === messageId);
+        if (!message || message.role !== "assistant") return;
+
+        // Find existing thinking part (always first in content)
+        const thinkingPart = message.content.find(
+          (p): p is { type: "thinking"; thinking: string } => p.type === "thinking"
+        );
+        if (thinkingPart) {
+          thinkingPart.thinking += thinking;
+        } else {
+          // Insert thinking part at the beginning
+          message.content.unshift({ type: "thinking", thinking });
         }
       });
     },

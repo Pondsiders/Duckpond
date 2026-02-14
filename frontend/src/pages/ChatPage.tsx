@@ -41,7 +41,7 @@ const fontScale = 1.25;
 // -----------------------------------------------------------------------------
 
 interface StreamEvent {
-  type: "text-delta" | "text" | "tool-call" | "tool-result" | "session-id" | "context" | "done" | "error" | "archive-error";
+  type: "text-delta" | "text" | "thinking-delta" | "tool-call" | "tool-result" | "session-id" | "context" | "done" | "error" | "archive-error";
   data: unknown;
 }
 
@@ -100,6 +100,28 @@ const UserMessage = () => {
   );
 };
 
+const ThinkingBlock = ({ text, status }: { text: string; status: unknown }) => {
+  const isStreaming = (status as { type?: string })?.type === "running";
+
+  return (
+    <details open={isStreaming} className="mb-3 group">
+      <summary
+        className="cursor-pointer text-muted italic font-serif select-none list-none flex items-center gap-2"
+        style={{ fontSize: `${13 * fontScale}px` }}
+      >
+        <span className="text-muted/60 group-open:rotate-90 transition-transform inline-block">▶</span>
+        {isStreaming ? "Alpha is thinking..." : "Alpha's thinking"}
+      </summary>
+      <div
+        className="mt-2 pl-4 border-l-2 border-muted/20 text-muted italic font-serif leading-relaxed whitespace-pre-wrap"
+        style={{ fontSize: `${13 * fontScale}px` }}
+      >
+        {text}
+      </div>
+    </details>
+  );
+};
+
 const AssistantMessage = () => {
   return (
     <MessagePrimitive.Root className="mb-6 pl-2 pr-12">
@@ -110,6 +132,7 @@ const AssistantMessage = () => {
         <MessagePrimitive.Parts
           components={{
             Text: MarkdownText,
+            Reasoning: ThinkingBlock,
             tools: {
               Fallback: ToolFallback,
             },
@@ -125,10 +148,19 @@ const AssistantMessage = () => {
 // -----------------------------------------------------------------------------
 
 const convertMessage = (message: Message): ThreadMessageLike => {
+  // Map our internal content parts to assistant-ui's expected types
+  const content = message.content.map((part) => {
+    if (part.type === "thinking") {
+      // Map thinking blocks to assistant-ui's native "reasoning" part type
+      return { type: "reasoning" as const, text: part.thinking };
+    }
+    return part;
+  });
+
   return {
     id: message.id,
     role: message.role,
-    content: message.content,
+    content,
     createdAt: message.createdAt,
   };
 };
@@ -148,6 +180,7 @@ function ThreadView() {
   const addUserMessage = useGazeboStore((s) => s.addUserMessage);
   const addAssistantPlaceholder = useGazeboStore((s) => s.addAssistantPlaceholder);
   const appendToAssistant = useGazeboStore((s) => s.appendToAssistant);
+  const appendThinking = useGazeboStore((s) => s.appendThinking);
   const addToolCall = useGazeboStore((s) => s.addToolCall);
   const updateToolResult = useGazeboStore((s) => s.updateToolResult);
   const setMessages = useGazeboStore((s) => s.setMessages);
@@ -276,6 +309,11 @@ function ThreadView() {
             console.log("[Gazebo] SSE event:", event.type);
           }
           switch (event.type) {
+            case "thinking-delta":
+              // Extended thinking — stream into collapsible thinking block
+              appendThinking(assistantId, event.data as string);
+              break;
+
             case "text-delta":
               // Real-time streaming! Append each chunk as it arrives
               appendToAssistant(assistantId, event.data as string);
@@ -352,6 +390,7 @@ function ThreadView() {
       addUserMessage,
       addAssistantPlaceholder,
       appendToAssistant,
+      appendThinking,
       addToolCall,
       updateToolResult,
       setSessionId,

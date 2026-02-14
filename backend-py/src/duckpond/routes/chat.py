@@ -96,6 +96,11 @@ async def stream_sse_events(content: str | list[Any], session_id: str | None) ->
                                     if text:
                                         await queue.put({"type": "text-delta", "data": text})
 
+                                elif delta_type == "thinking_delta":
+                                    thinking = delta.get("thinking", "")
+                                    if thinking:
+                                        await queue.put({"type": "thinking-delta", "data": thinking})
+
                         # Handle complete messages (tool calls, etc.)
                         elif isinstance(message, AssistantMessage):
                             for block in message.content:
