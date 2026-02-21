@@ -26,7 +26,6 @@ from typing import Any, AsyncIterator
 import logfire
 
 from alpha_sdk import AlphaClient
-from alpha_sdk.tools.cortex import create_cortex_server
 
 
 class DuckpondClient:
@@ -92,27 +91,10 @@ class DuckpondClient:
 
     async def _create_client(self, session_id: str | None) -> None:
         """Create a new AlphaClient, optionally resuming a session."""
-        # Create Cortex MCP server with session ID provider and memorables clearer
-        cortex_server = create_cortex_server(
-            get_session_id=lambda: self._current_session_id,
-            clear_memorables=lambda: self._client.clear_memorables() if self._client else 0,
-        )
-
         self._client = AlphaClient(
             cwd="/Pondside",
             client_name="duckpond",
             permission_mode="bypassPermissions",
-            mcp_servers={"cortex": cortex_server},
-            allowed_tools=[
-                "Read", "Write", "Edit", "Glob", "Grep", "Bash",
-                "WebFetch", "WebSearch", "Task", "TaskOutput", "Skill",
-                "TodoWrite", "NotebookEdit", "KillShell",
-                "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
-                # MCP tools
-                "mcp__cortex__store",
-                "mcp__cortex__search",
-                "mcp__cortex__recent",
-            ],
         )
         await self._client.connect(session_id)
         self._current_session_id = session_id
