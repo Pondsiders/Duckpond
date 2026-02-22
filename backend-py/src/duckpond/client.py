@@ -6,7 +6,7 @@ for the lifespan of the program. This module provides that client.
 Session handling:
 - At startup: no client, no session
 - First request comes in with sessionId (or None for new)
-- Create client with that session
+- Create client with that session (streaming mode)
 - Track current_session_id
 - If next request has different sessionId, switch sessions
 - If same sessionId, reuse existing client
@@ -19,6 +19,12 @@ AlphaClient handles everything:
 - Observability spans
 - Cortex MCP tools
 - Turn archiving
+
+Streaming input mode:
+- Client uses send() + events() instead of query() + stream()
+- One persistent SSE pipe per session (GET /api/stream)
+- POST /api/chat is fire-and-forget
+- Messages queue on asyncio.Queue, responses flow through response queue
 """
 
 from typing import Any, AsyncIterator
@@ -33,6 +39,7 @@ class DuckpondClient:
 
     Lazy initialization: no client at startup.
     Creates client on first request, recreates on session change.
+    Uses streaming input mode for persistent SSE connections.
     """
 
     def __init__(self) -> None:
@@ -61,21 +68,13 @@ class DuckpondClient:
             return self._client.context_window
         return 200_000
 
-    def set_token_count_callback(self, callback) -> None:
-        """Set the token count callback on the underlying AlphaClient.
-
-        Called per-turn with a closure over the current SSE queue.
-        """
-        if self._client:
-            self._client.set_token_count_callback(callback)
-
     async def ensure_session(self, session_id: str | None) -> None:
-        """Ensure we have a client connected to the right session.
+        """Ensure we have a streaming client connected to the right session.
 
         Args:
             session_id: The session to connect to, or None for new session
 
-        If no client exists, create one.
+        If no client exists, create one in streaming mode.
         If client exists but for different session, close and recreate.
         If client exists for same session, do nothing.
         """
@@ -90,17 +89,17 @@ class DuckpondClient:
         # else: same session, reuse existing client
 
     async def _create_client(self, session_id: str | None) -> None:
-        """Create a new AlphaClient, optionally resuming a session."""
+        """Create a new AlphaClient in streaming mode."""
         self._client = AlphaClient(
             cwd="/Pondside",
             client_name="duckpond",
             permission_mode="bypassPermissions",
         )
-        await self._client.connect(session_id)
+        await self._client.connect(session_id, streaming=True)
         self._current_session_id = session_id
 
         desc = f"resuming {session_id[:8]}..." if session_id else "new session"
-        logfire.info(f"Client connected ({desc})")
+        logfire.info(f"Streaming client connected ({desc})")
 
     async def _close_client(self) -> None:
         """Close the current client."""
@@ -115,35 +114,35 @@ class DuckpondClient:
                 else:
                     raise
             self._client = None
-            logfire.info("Client disconnected")
+            logfire.info("Streaming client disconnected")
 
-    def update_session_id(self, session_id: str) -> None:
-        """Update the current session ID after receiving it from Claude.
-
-        Called when we start a new session (resume=None) and Claude
-        gives us back the actual session ID in ResultMessage.
-        """
-        if self._current_session_id is None and session_id:
-            logfire.info(f"New session ID: {session_id[:8]}...")
-            self._current_session_id = session_id
-
-    async def query(self, prompt: str | list[Any], session_id: str | None = None) -> None:
-        """Send a message to Claude.
+    async def send(self, content: str | list[Any], session_id: str | None = None) -> None:
+        """Queue a message. Returns immediately.
 
         Args:
-            prompt: Either a string (text-only) or a list of content blocks (multimodal).
-            session_id: The session ID for this message.
+            content: Text string or content blocks (multimodal).
+            session_id: Session ID (used for ensure_session, not per-message).
         """
-        if not self._client:
-            raise RuntimeError("Client not connected - call ensure_session first")
-
-        await self._client.query(prompt, session_id=session_id)
-
-    async def stream(self) -> AsyncIterator[Any]:
-        """Stream response from Claude."""
+        await self.ensure_session(session_id)
         if not self._client:
             raise RuntimeError("Client not connected")
-        async for event in self._client.stream():
+        await self._client.send(content)
+
+    async def events(self) -> AsyncIterator[dict[str, Any]]:
+        """Yield SSE events from the response queue.
+
+        Each event is a dict: {"type": "text-delta", "data": {...}, "id": N}
+        Terminates when the session ends.
+        """
+        if not self._client:
+            raise RuntimeError("Client not connected")
+        async for event in self._client.events():
+            # Update our session ID from session-id events
+            if event.get("type") == "session-id":
+                new_sid = event.get("data", {}).get("sessionId")
+                if new_sid and self._current_session_id is None:
+                    logfire.info(f"New session ID: {new_sid[:8]}...")
+                    self._current_session_id = new_sid
             yield event
 
     async def interrupt(self) -> None:

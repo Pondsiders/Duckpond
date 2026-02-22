@@ -3,9 +3,12 @@
  *
  * Uses Zustand for state management and useExternalStoreRuntime to bridge
  * to assistant-ui primitives. State lives in the store, not in React state.
+ *
+ * SSE model: One persistent EventSource per session (GET /api/stream).
+ * Messages sent via fire-and-forget POST /api/chat.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { ArrowUp, Square } from "lucide-react";
 import { ContextMeter } from "../components/ContextMeter";
@@ -21,7 +24,6 @@ import {
   ThreadPrimitive,
   ComposerPrimitive,
   MessagePrimitive,
-  AssistantIf,
   SimpleImageAttachmentAdapter,
 } from "@assistant-ui/react";
 import type { ThreadMessageLike, AppendMessage } from "@assistant-ui/react";
@@ -29,57 +31,10 @@ import { MarkdownText } from "../components/MarkdownText";
 import {
   useGazeboStore,
   type Message,
-  type JSONValue,
-  type ToolCallPart,
 } from "../store";
 
 // Font scale for 125% sizing
 const fontScale = 1.25;
-
-// -----------------------------------------------------------------------------
-// SSE Stream Reader
-// -----------------------------------------------------------------------------
-
-interface StreamEvent {
-  type: "text-delta" | "text" | "thinking-delta" | "tool-call" | "tool-result" | "session-id" | "context" | "done" | "error" | "archive-error";
-  data: unknown;
-}
-
-async function* readSSEStream(
-  reader: ReadableStreamDefaultReader<Uint8Array>
-): AsyncGenerator<StreamEvent> {
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const data = line.slice(6);
-          if (data === "[DONE]") {
-            yield { type: "done", data: null };
-          } else {
-            try {
-              const parsed = JSON.parse(data);
-              yield parsed as StreamEvent;
-            } catch {
-              // Ignore malformed JSON
-            }
-          }
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
 
 // -----------------------------------------------------------------------------
 // Message Components (using MessagePrimitive)
@@ -176,42 +131,129 @@ function ThreadView() {
   const sessionId = useGazeboStore((s) => s.sessionId);
   const inputTokens = useGazeboStore((s) => s.inputTokens);
 
-  // === ZUSTAND ACTIONS ===
+  // === ZUSTAND ACTIONS (used by onNew and runtime) ===
   const addUserMessage = useGazeboStore((s) => s.addUserMessage);
-  const addAssistantPlaceholder = useGazeboStore((s) => s.addAssistantPlaceholder);
-  const appendToAssistant = useGazeboStore((s) => s.appendToAssistant);
-  const appendThinking = useGazeboStore((s) => s.appendThinking);
-  const addToolCall = useGazeboStore((s) => s.addToolCall);
-  const updateToolResult = useGazeboStore((s) => s.updateToolResult);
   const setMessages = useGazeboStore((s) => s.setMessages);
-  const setSessionId = useGazeboStore((s) => s.setSessionId);
-  const setRunning = useGazeboStore((s) => s.setRunning);
-  const setInputTokens = useGazeboStore((s) => s.setInputTokens);
+  // SSE event handlers use useGazeboStore.getState() directly
+  // to avoid stale closures in EventSource listeners
 
-  // Fetch token count when session changes or messages update
+  // Track the current assistant message ID for SSE event routing
+  const currentAssistantIdRef = useRef<string | null>(null);
+
+  // === EventSource: persistent SSE pipe ===
+  const eventSourceRef = useRef<EventSource | null>(null);
+
   useEffect(() => {
-    if (!sessionId) return;
+    // Build SSE URL
+    const params = new URLSearchParams();
+    if (sessionId) {
+      params.set("sessionId", sessionId);
+    }
+    const url = `/api/stream${params.toString() ? `?${params}` : ""}`;
 
-    const fetchTokenCount = async () => {
-      try {
-        const response = await fetch(`/api/context/${sessionId}`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.input_tokens != null) {
-            setInputTokens(data.input_tokens);
-          }
-        }
-      } catch (err) {
-        console.warn("[Duckpond] Failed to fetch token count:", err);
+    console.log("[Gazebo] Opening EventSource:", url);
+    const es = new EventSource(url);
+    eventSourceRef.current = es;
+
+    // --- Event handlers ---
+
+    es.addEventListener("turn-start", () => {
+      console.log("[Gazebo] turn-start");
+      // Create assistant placeholder for this turn
+      const { addAssistantPlaceholder, setRunning } = useGazeboStore.getState();
+      const id = addAssistantPlaceholder();
+      currentAssistantIdRef.current = id;
+      setRunning(true);
+    });
+
+    es.addEventListener("text-delta", (e: MessageEvent) => {
+      const { text } = JSON.parse(e.data);
+      const id = currentAssistantIdRef.current;
+      if (id && text) {
+        useGazeboStore.getState().appendToAssistant(id, text);
       }
+    });
+
+    es.addEventListener("thinking-delta", (e: MessageEvent) => {
+      const { text } = JSON.parse(e.data);
+      const id = currentAssistantIdRef.current;
+      if (id && text) {
+        useGazeboStore.getState().appendThinking(id, text);
+      }
+    });
+
+    es.addEventListener("tool-call", (e: MessageEvent) => {
+      const data = JSON.parse(e.data);
+      const id = currentAssistantIdRef.current;
+      if (id) {
+        useGazeboStore.getState().addToolCall(id, {
+          toolCallId: data.toolCallId,
+          toolName: data.toolName,
+          args: data.args,
+          argsText: data.argsText,
+        });
+      }
+    });
+
+    es.addEventListener("tool-result", (e: MessageEvent) => {
+      const { toolCallId, result, isError } = JSON.parse(e.data);
+      const id = currentAssistantIdRef.current;
+      if (id) {
+        useGazeboStore.getState().updateToolResult(id, toolCallId, result, isError);
+      }
+    });
+
+    es.addEventListener("session-id", (e: MessageEvent) => {
+      const { sessionId: newSid } = JSON.parse(e.data);
+      console.log("[Gazebo] session-id:", newSid?.slice(0, 8));
+      useGazeboStore.getState().setSessionId(newSid);
+    });
+
+    es.addEventListener("context", (e: MessageEvent) => {
+      const { count } = JSON.parse(e.data);
+      useGazeboStore.getState().setInputTokens(count);
+    });
+
+    es.addEventListener("status", (e: MessageEvent) => {
+      const { phase } = JSON.parse(e.data);
+      console.log("[Gazebo] status:", phase);
+      if (phase === "compacting") {
+        useGazeboStore.getState().setRunning(true);
+      }
+    });
+
+    es.addEventListener("turn-end", () => {
+      console.log("[Gazebo] turn-end");
+      useGazeboStore.getState().setRunning(false);
+      currentAssistantIdRef.current = null;
+    });
+
+    es.addEventListener("error", ((e: MessageEvent) => {
+      // SSE-level error event (from server)
+      if (e.data) {
+        try {
+          const { message } = JSON.parse(e.data);
+          console.error("[Gazebo] Stream error:", message);
+        } catch {
+          console.error("[Gazebo] Stream error (raw):", e.data);
+        }
+      }
+    }) as EventListener);
+
+    es.onerror = () => {
+      // EventSource connection error (network, etc.)
+      // Browser will auto-reconnect
+      console.warn("[Gazebo] EventSource connection error, will auto-reconnect");
     };
 
-    // Delay to let the backend count tokens
-    const timer = setTimeout(fetchTokenCount, 1000);
-    return () => clearTimeout(timer);
-  }, [sessionId, messages.length, setInputTokens]);
+    return () => {
+      console.log("[Gazebo] Closing EventSource");
+      es.close();
+      eventSourceRef.current = null;
+    };
+  }, [sessionId]); // Reconnect when session changes
 
-  // === onNew: Handle new user messages ===
+  // === onNew: Handle new user messages (fire-and-forget POST) ===
   const onNew = useCallback(
     async (appendMessage: AppendMessage) => {
       // Extract text content from the message
@@ -220,21 +262,17 @@ function ThreadView() {
       );
       const text = textParts.map((p) => p.text).join("\n");
 
-      // Extract image attachments - these are in appendMessage.attachments, not content!
-      // SimpleImageAttachmentAdapter puts images there as CompleteAttachment objects
+      // Extract image attachments
       const attachments = appendMessage.attachments || [];
       const imageAttachments = attachments.filter(
-        (a): a is { type: "image"; name: string; contentType: string; file?: File; content: string } =>
-          a.type === "image" && "content" in a
+        (a) => a.type === "image" && "content" in a
       );
 
       if (!text.trim() && imageAttachments.length === 0) return;
 
-      console.log("[Gazebo] onNew called, text length:", text.length, "images:", imageAttachments.length);
+      console.log("[Gazebo] Sending message, text length:", text.length, "images:", imageAttachments.length);
 
       // 1. Add user message to store immediately (optimistic)
-      // Convert attachments to our store format
-      // att.content is an array like [{ type: "image", image: "data:..." }]
       const storeAttachments = imageAttachments.flatMap(a => {
         if (Array.isArray(a.content)) {
           return a.content
@@ -245,17 +283,12 @@ function ThreadView() {
       });
       addUserMessage(text, storeAttachments);
 
-      // 2. Create placeholder for assistant response
-      const assistantId = addAssistantPlaceholder();
-      setRunning(true);
-
-      // Build content for backend (Claude API format)
+      // 2. Build content for backend (Claude API format)
       const backendContent: Array<{ type: string; text?: string; source?: { type: string; media_type: string; data: string } }> = [];
       if (text.trim()) {
         backendContent.push({ type: "text", text });
       }
       for (const att of imageAttachments) {
-        // att.content is an array like [{ type: "image", image: "data:image/jpeg;base64,..." }]
         if (Array.isArray(att.content)) {
           for (const contentPart of att.content) {
             if (contentPart.type === "image" && "image" in contentPart) {
@@ -277,9 +310,8 @@ function ThreadView() {
         }
       }
 
+      // 3. Fire-and-forget POST — response comes through EventSource
       try {
-        // 3. Call backend with content (text + images)
-        console.log("[Gazebo] Starting fetch to /api/chat...");
         const response = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -290,120 +322,61 @@ function ThreadView() {
               : backendContent,  // Array for multimodal
           }),
         });
-        console.log("[Gazebo] Fetch completed, status:", response.status);
 
         if (!response.ok) {
           throw new Error(`API error: ${response.status}`);
         }
 
-        // 4. Stream response
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error("No response body");
-        }
-        console.log("[Gazebo] Got reader, starting SSE stream...");
-
-        for await (const event of readSSEStream(reader)) {
-          // Only log non-delta events to avoid spam
-          if (event.type !== "text-delta") {
-            console.log("[Gazebo] SSE event:", event.type);
-          }
-          switch (event.type) {
-            case "thinking-delta":
-              // Extended thinking — stream into collapsible thinking block
-              appendThinking(assistantId, event.data as string);
-              break;
-
-            case "text-delta":
-              // Real-time streaming! Append each chunk as it arrives
-              appendToAssistant(assistantId, event.data as string);
-              break;
-
-            case "text":
-              // Fallback for complete text blocks (shouldn't happen often with streaming)
-              appendToAssistant(assistantId, event.data as string);
-              break;
-
-            case "tool-call": {
-              const tc = event.data as ToolCallPart;
-              addToolCall(assistantId, {
-                toolCallId: tc.toolCallId,
-                toolName: tc.toolName,
-                args: tc.args,
-                argsText: tc.argsText,
-              });
-              break;
-            }
-
-            case "tool-result": {
-              const { toolCallId, result, isError } = event.data as {
-                toolCallId: string;
-                result: JSONValue;
-                isError?: boolean;
-              };
-              updateToolResult(assistantId, toolCallId, result, isError);
-              break;
-            }
-
-            case "session-id":
-              setSessionId(event.data as string);
-              break;
-
-            case "context": {
-              const ctx = event.data as { count: number; window: number };
-              setInputTokens(ctx.count);
-              break;
-            }
-
-            case "error":
-              console.error("[Duckpond] Stream error:", event.data);
-              break;
-
-            case "archive-error":
-              // Scribe archiving failed - alert the user
-              console.error("[Duckpond] Archive failed:", event.data);
-              // TODO: Replace with toast component (sonner)
-              window.alert(`⚠️ Message archiving failed: ${event.data}`);
-              break;
-
-            case "done":
-              // Stream complete
-              console.log("[Gazebo] Stream complete (done event)");
-              break;
-          }
-        }
-        console.log("[Gazebo] Exited SSE loop");
+        const result = await response.json();
+        console.log("[Gazebo] POST result:", result.status);
       } catch (error) {
-        console.error("[Gazebo] Chat error:", error);
-        // Update placeholder with error message
-        appendToAssistant(
-          assistantId,
+        console.error("[Gazebo] POST error:", error);
+        // Don't create assistant placeholder here — turn-start event handles that
+        // But we should show the error somehow
+        const id = useGazeboStore.getState().addAssistantPlaceholder();
+        useGazeboStore.getState().appendToAssistant(
+          id,
           `Error: ${error instanceof Error ? error.message : "Unknown error"}`
         );
-      } finally {
-        console.log("[Gazebo] Finally block, setting isRunning=false");
-        setRunning(false);
+        useGazeboStore.getState().setRunning(false);
       }
     },
-    [
-      sessionId,
-      addUserMessage,
-      addAssistantPlaceholder,
-      appendToAssistant,
-      appendThinking,
-      addToolCall,
-      updateToolResult,
-      setSessionId,
-      setRunning,
-    ]
+    [sessionId, addUserMessage]
   );
 
+  // === onCancel: Interrupt current operation ===
+  const onCancel = useCallback(async () => {
+    console.log("[Gazebo] Interrupting...");
+    try {
+      await fetch("/api/chat/interrupt", { method: "POST" });
+    } catch (error) {
+      console.error("[Gazebo] Interrupt error:", error);
+    }
+  }, []);
+
+  // === Esc key: interrupt when running ===
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && useGazeboStore.getState().isRunning) {
+        e.preventDefault();
+        onCancel();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onCancel]);
+
   // === RUNTIME ===
+  // NOTE: We intentionally do NOT pass isRunning to the runtime.
+  // assistant-ui disables Send and changes Enter→newline when isRunning=true,
+  // but we WANT queueing — sending while Alpha is still responding.
+  // We manage running-state UI (thinking indicator, cancel button) ourselves
+  // using the store's isRunning, not the runtime's.
   const runtime = useExternalStoreRuntime({
     messages,
     setMessages,
-    isRunning,
     onNew,
+    onCancel,
     convertMessage,
     adapters: {
       attachments: new SimpleImageAttachmentAdapter(),
@@ -442,8 +415,8 @@ function ThreadView() {
                 }}
               />
 
-              {/* Thinking indicator — only shows when running */}
-              <AssistantIf condition={({ thread }) => thread.isRunning}>
+              {/* Thinking indicator — uses store's isRunning (not runtime's) */}
+              {isRunning && (
                 <div
                   className="flex items-center gap-2 px-2 py-3 text-muted font-serif italic"
                   style={{ fontSize: `${14 * fontScale}px` }}
@@ -451,7 +424,7 @@ function ThreadView() {
                   <span className="inline-block w-2 h-2 bg-primary rounded-full animate-pulse-dot" />
                   Alpha is thinking...
                 </div>
-              </AssistantIf>
+              )}
             </div>
 
             {/* Bottom spacer */}
@@ -479,22 +452,23 @@ function ThreadView() {
                   className="font-serif text-muted"
                   style={{ fontSize: `${14 * fontScale}px` }}
                 >
-                  Opus 4.5
+                  Opus 4.6
                 </span>
 
-                {/* Send button (shown when not running) */}
-                <AssistantIf condition={({ thread }) => !thread.isRunning}>
-                  <ComposerPrimitive.Send className="w-9 h-9 flex items-center justify-center bg-primary border-none rounded-lg text-white cursor-pointer">
-                    <ArrowUp size={20} strokeWidth={2.5} />
-                  </ComposerPrimitive.Send>
-                </AssistantIf>
+                {/* Send button (always visible — queueing allowed) */}
+                <ComposerPrimitive.Send className="w-9 h-9 flex items-center justify-center bg-primary border-none rounded-lg text-white cursor-pointer">
+                  <ArrowUp size={20} strokeWidth={2.5} />
+                </ComposerPrimitive.Send>
 
-                {/* Cancel button (shown when running) */}
-                <AssistantIf condition={({ thread }) => thread.isRunning}>
-                  <ComposerPrimitive.Cancel className="w-9 h-9 flex items-center justify-center bg-primary border-none rounded-lg text-white cursor-pointer">
+                {/* Cancel button (uses store's isRunning, not runtime's) */}
+                {isRunning && (
+                  <button
+                    onClick={onCancel}
+                    className="w-9 h-9 flex items-center justify-center bg-red-600 border-none rounded-lg text-white cursor-pointer"
+                  >
                     <Square size={16} fill="white" />
-                  </ComposerPrimitive.Cancel>
-                </AssistantIf>
+                  </button>
+                )}
               </div>
             </ComposerPrimitive.Root>
             <p

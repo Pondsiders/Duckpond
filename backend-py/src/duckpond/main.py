@@ -17,6 +17,7 @@ import logfire
 
 from duckpond.client import client
 from duckpond.routes.chat import router as chat_router
+from duckpond.routes.stream import router as stream_router
 from duckpond.routes.sessions import router as sessions_router
 from duckpond.routes.context import router as context_router
 
@@ -73,6 +74,7 @@ app.add_middleware(
 
 # Mount routes
 app.include_router(chat_router)
+app.include_router(stream_router)
 app.include_router(sessions_router)
 app.include_router(context_router)
 
