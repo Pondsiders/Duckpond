@@ -49,7 +49,9 @@ export default defineConfig({
     port: FRONTEND_PORT,
     host: '0.0.0.0',
     https: getCertConfig(),
-    // HMR enabled in dev worktree - we want fast iteration here!
+    // HMR disabled — we use Duckpond to work on Duckpond.
+    // Don't want the frontend reloading mid-conversation when we edit .tsx files.
+    hmr: false,
     proxy: {
       '/api': {
         target: `http://localhost:${BACKEND_PORT}`,
