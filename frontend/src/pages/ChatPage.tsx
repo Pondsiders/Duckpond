@@ -137,6 +137,17 @@ function ThreadView() {
   // SSE event handlers use useGazeboStore.getState() directly
   // to avoid stale closures in EventSource listeners
 
+  // Clipboard copy state for session ID
+  const [copied, setCopied] = useState(false);
+
+  const handleCopySessionId = useCallback(() => {
+    if (!sessionId) return;
+    navigator.clipboard.writeText(sessionId).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [sessionId]);
+
   // Track the current assistant message ID for SSE event routing
   const currentAssistantIdRef = useRef<string | null>(null);
 
@@ -396,9 +407,13 @@ function ThreadView() {
           </Link>
           <div className="flex items-center gap-4">
             {sessionId && (
-              <span className="font-mono text-xs text-muted">
-                {sessionId.slice(0, 8)}...
-              </span>
+              <button
+                onClick={handleCopySessionId}
+                className="font-mono text-xs text-muted bg-transparent border-none cursor-pointer hover:text-foreground transition-colors"
+                title={sessionId}
+              >
+                {copied ? "Copied!" : `${sessionId.slice(0, 8)}...`}
+              </button>
             )}
             <ContextMeter inputTokens={inputTokens} />
           </div>
