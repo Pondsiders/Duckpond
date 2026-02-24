@@ -29,8 +29,6 @@ Streaming input mode:
 
 from typing import Any, AsyncIterator
 
-import logfire
-
 from alpha_sdk import AlphaClient
 
 
@@ -83,7 +81,6 @@ class DuckpondClient:
             await self._create_client(session_id)
         elif session_id != self._current_session_id:
             # Different session - close and recreate
-            logfire.info(f"Session change: {self._current_session_id} -> {session_id}")
             await self._close_client()
             await self._create_client(session_id)
         # else: same session, reuse existing client
@@ -98,8 +95,7 @@ class DuckpondClient:
         await self._client.connect(session_id, streaming=True)
         self._current_session_id = session_id
 
-        desc = f"resuming {session_id[:8]}..." if session_id else "new session"
-        logfire.info(f"Streaming client connected ({desc})")
+        # Client connected - resuming or new session
 
     async def _close_client(self) -> None:
         """Close the current client."""
@@ -114,7 +110,6 @@ class DuckpondClient:
                 else:
                     raise
             self._client = None
-            logfire.info("Streaming client disconnected")
 
     async def send(self, content: str | list[Any], session_id: str | None = None) -> None:
         """Queue a message. Returns immediately.
@@ -141,7 +136,6 @@ class DuckpondClient:
             if event.get("type") == "session-id":
                 new_sid = event.get("data", {}).get("sessionId")
                 if new_sid and self._current_session_id is None:
-                    logfire.info(f"New session ID: {new_sid[:8]}...")
                     self._current_session_id = new_sid
             yield event
 

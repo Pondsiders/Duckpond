@@ -34,8 +34,6 @@ logfire.configure(
     scrubbing=False,
 )
 
-# Route Python logging through Logfire
-logging.basicConfig(handlers=[logfire.LogfireLoggingHandler()], level=logging.INFO)
 
 
 @asynccontextmanager
@@ -59,9 +57,6 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
-
-# Instrument FastAPI with Logfire for automatic request tracing
-logfire.instrument_fastapi(app)
 
 # CORS - allow frontend
 app.add_middleware(
