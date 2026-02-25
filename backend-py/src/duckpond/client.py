@@ -5,11 +5,10 @@ for the lifespan of the program. This module provides that client.
 
 Session handling:
 - At startup: no client, no session
-- First request comes in with sessionId (or None for new)
-- Create client with that session (streaming mode)
-- Track current_session_id
-- If next request has different sessionId, switch sessions
-- If same sessionId, reuse existing client
+- GET /api/stream creates the client and owns the session
+- POST /api/chat is a mail slot — uses the existing client, never creates or
+  tears down. If no client exists, it errors.
+- Session ID tracking updates from session-id events flowing through events()
 
 AlphaClient handles everything:
 - Soul injection (system prompt)
@@ -111,16 +110,21 @@ class DuckpondClient:
                     raise
             self._client = None
 
-    async def send(self, content: str | list[Any], session_id: str | None = None) -> None:
+    async def send(self, content: str | list[Any]) -> None:
         """Queue a message. Returns immediately.
+
+        The stream endpoint (GET /api/stream) must establish the connection
+        before messages can be sent. This method is a mail slot — it uses
+        the existing client, never creates or tears one down.
 
         Args:
             content: Text string or content blocks (multimodal).
-            session_id: Session ID (used for ensure_session, not per-message).
+
+        Raises:
+            RuntimeError: If no active stream connection exists.
         """
-        await self.ensure_session(session_id)
         if not self._client:
-            raise RuntimeError("Client not connected")
+            raise RuntimeError("No active stream — connect via /api/stream first")
         await self._client.send(content)
 
     async def events(self) -> AsyncIterator[dict[str, Any]]:
@@ -132,10 +136,10 @@ class DuckpondClient:
         if not self._client:
             raise RuntimeError("Client not connected")
         async for event in self._client.events():
-            # Update our session ID from session-id events
+            # Always track the SDK's actual session ID
             if event.get("type") == "session-id":
                 new_sid = event.get("data", {}).get("sessionId")
-                if new_sid and self._current_session_id is None:
+                if new_sid:
                     self._current_session_id = new_sid
             yield event
 

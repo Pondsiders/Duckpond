@@ -231,7 +231,13 @@ function ThreadView() {
     es.addEventListener("session-id", (e: MessageEvent) => {
       const { sessionId: newSid } = JSON.parse(e.data);
       console.log("[Gazebo] session-id:", newSid?.slice(0, 8));
-      useGazeboStore.getState().setSessionId(newSid);
+      // Only update the store if the session ID actually changed.
+      // Avoids triggering a useEffect reconnection when the SDK
+      // confirms the same session ID we already have (resume case).
+      const current = useGazeboStore.getState().sessionId;
+      if (current !== newSid) {
+        useGazeboStore.getState().setSessionId(newSid);
+      }
     });
 
     es.addEventListener("context", (e: MessageEvent) => {

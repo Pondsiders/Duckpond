@@ -31,11 +31,10 @@ async def chat(request: Request) -> dict:
     raw_body = await request.body()
     body = orjson.loads(raw_body)
 
-    session_id = body.get("sessionId")
     content = body.get("content", "")
 
     try:
-        await client.send(content, session_id=session_id)
+        await client.send(content)
         return {"status": "queued"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
