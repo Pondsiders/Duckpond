@@ -140,6 +140,12 @@ function ThreadView() {
   // Clipboard copy state for session ID
   const [copied, setCopied] = useState(false);
 
+  // Connection recovery state
+  const [connectionLost, setConnectionLost] = useState(false);
+  const [reconnectKey, setReconnectKey] = useState(0);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const handleCopySessionId = useCallback(() => {
     if (!sessionId) return;
     navigator.clipboard.writeText(sessionId).then(() => {
@@ -165,6 +171,14 @@ function ThreadView() {
     console.log("[Gazebo] Opening EventSource:", url);
     const es = new EventSource(url);
     eventSourceRef.current = es;
+
+    // --- Connection lifecycle ---
+
+    es.onopen = () => {
+      console.log("[Gazebo] EventSource connected");
+      reconnectAttemptsRef.current = 0;
+      setConnectionLost(false);
+    };
 
     // --- Event handlers ---
 
@@ -252,17 +266,35 @@ function ThreadView() {
     }) as EventListener);
 
     es.onerror = () => {
-      // EventSource connection error (network, etc.)
-      // Browser will auto-reconnect
-      console.warn("[Gazebo] EventSource connection error, will auto-reconnect");
+      console.warn("[Gazebo] EventSource error, readyState:", es.readyState);
+      // Always unstick the running state so the UI doesn't freeze
+      useGazeboStore.getState().setRunning(false);
+
+      if (es.readyState === EventSource.CLOSED) {
+        // Browser won't retry — reconnect manually with exponential backoff
+        setConnectionLost(true);
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
+        console.log(`[Gazebo] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current + 1})`);
+        reconnectAttemptsRef.current++;
+        reconnectTimerRef.current = setTimeout(() => {
+          setReconnectKey((k) => k + 1);
+        }, delay);
+      } else {
+        // readyState === CONNECTING — browser is auto-retrying, just show banner
+        setConnectionLost(true);
+      }
     };
 
     return () => {
       console.log("[Gazebo] Closing EventSource");
       es.close();
       eventSourceRef.current = null;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
     };
-  }, [sessionId]); // Reconnect when session changes
+  }, [sessionId, reconnectKey]); // Reconnect when session changes or reconnectKey increments
 
   // === onNew: Handle new user messages (fire-and-forget POST) ===
   const onNew = useCallback(
@@ -418,6 +450,13 @@ function ThreadView() {
             <ContextMeter inputTokens={inputTokens} />
           </div>
         </header>
+
+        {/* Connection lost banner */}
+        {connectionLost && (
+          <div className="px-6 py-2 border-b border-error/20 text-center font-serif bg-error/10 text-error/80">
+            Connection lost. Reconnecting...
+          </div>
+        )}
 
         {/* Thread */}
         <ThreadPrimitive.Root className="flex-1 flex flex-col overflow-hidden">
