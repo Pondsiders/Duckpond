@@ -463,13 +463,6 @@ function ThreadView() {
                 {/* Add attachment button */}
                 <ComposerAddAttachment />
 
-                <span
-                  className="font-serif text-muted"
-                  style={{ fontSize: `${14 * fontScale}px` }}
-                >
-                  Opus 4.6
-                </span>
-
                 {/* Send button (always visible — queueing allowed) */}
                 <ComposerPrimitive.Send className="w-9 h-9 flex items-center justify-center bg-primary border-none rounded-lg text-white cursor-pointer">
                   <ArrowUp size={20} strokeWidth={2.5} />
